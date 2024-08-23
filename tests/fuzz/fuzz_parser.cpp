@@ -1,10 +1,10 @@
-#include <eosio/wasm_backend/parser.hpp>
+#include <sysio/wasm_backend/parser.hpp>
 #include <fstream>
 #include <iostream>
 #include <chrono>
 
-using namespace eosio;
-using namespace eosio::wasm_backend;
+using namespace sysio;
+using namespace sysio::wasm_backend;
 using namespace std::chrono;
 
 

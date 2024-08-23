@@ -1,9 +1,9 @@
-#include <eosio/vm/backend.hpp>
+#include <sysio/vm/backend.hpp>
 
 #include "utils.hpp"
 #include <catch2/catch.hpp>
 
-using namespace eosio::vm;
+using namespace sysio::vm;
 
 extern wasm_allocator wa;
 

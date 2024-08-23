@@ -1,13 +1,13 @@
-#include <eosio/vm/backend.hpp>
-#include <eosio/vm/error_codes.hpp>
-#include <eosio/vm/host_function.hpp>
-#include <eosio/vm/watchdog.hpp>
+#include <sysio/vm/backend.hpp>
+#include <sysio/vm/error_codes.hpp>
+#include <sysio/vm/host_function.hpp>
+#include <sysio/vm/watchdog.hpp>
 
 #include <iostream>
 #include <string>
 
-using namespace eosio;
-using namespace eosio::vm;
+using namespace sysio;
+using namespace sysio::vm;
 
 #include "hello.wasm.hpp"
 
@@ -19,7 +19,7 @@ struct example_host_methods {
    void* memset(char* ptr, int x, size_t n) { return ::memset(ptr, x, n); }
    std::string  field = "";
 
-   void eosio_assert(bool test, const char* msg) {
+   void sysio_assert(bool test, const char* msg) {
       if (!test) {
          std::cout << msg << std::endl;
          throw 0;
@@ -57,13 +57,13 @@ int main(int argc, char** argv) {
    // Thread specific `allocator` used for wasm linear memory.
    wasm_allocator wa;
    // Specific the backend with example_host_methods for host functions.
-   using rhf_t     = eosio::vm::registered_host_functions<example_host_methods, execution_interface, cnv>;
-   using backend_t = eosio::vm::backend<rhf_t>;
+   using rhf_t     = sysio::vm::registered_host_functions<example_host_methods, execution_interface, cnv>;
+   using backend_t = sysio::vm::backend<rhf_t>;
 
    // register print_num
    rhf_t::add<&example_host_methods::print_num>("env", "print_num");
-   // register eosio_assert
-   rhf_t::add<&example_host_methods::eosio_assert>("env", "eosio_assert");
+   // register sysio_assert
+   rhf_t::add<&example_host_methods::sysio_assert>("env", "sysio_assert");
    // register print_name
    rhf_t::add<&example_host_methods::print_name, test_name>("env", "print_name");
    // finally register memset

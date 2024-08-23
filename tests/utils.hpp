@@ -6,9 +6,9 @@
 #include <iterator>
 #include <string>
 #include <vector>
-#include <eosio/vm/allocator.hpp>
-#include <eosio/vm/stack_elem.hpp>
-#include <eosio/vm/utils.hpp>
+#include <sysio/vm/allocator.hpp>
+#include <sysio/vm/stack_elem.hpp>
+#include <sysio/vm/utils.hpp>
 
 struct type_converter32 {
    union {
@@ -40,22 +40,22 @@ T bit_cast(const U& u) {
 }
 
 
-inline bool check_nan(const std::optional<eosio::vm::operand_stack_elem>& v) {
-   return visit(eosio::vm::overloaded{[](eosio::vm::i32_const_t){ return false; },
-                                      [](eosio::vm::i64_const_t){ return false; },
-                                      [](eosio::vm::f32_const_t f) { return std::isnan(f.data.f); },
-                                      [](eosio::vm::f64_const_t f) { return std::isnan(f.data.f); }}, *v);
+inline bool check_nan(const std::optional<sysio::vm::operand_stack_elem>& v) {
+   return visit(sysio::vm::overloaded{[](sysio::vm::i32_const_t){ return false; },
+                                      [](sysio::vm::i64_const_t){ return false; },
+                                      [](sysio::vm::f32_const_t f) { return std::isnan(f.data.f); },
+                                      [](sysio::vm::f64_const_t f) { return std::isnan(f.data.f); }}, *v);
 }
 
-inline eosio::vm::wasm_allocator* get_wasm_allocator() {
-   static eosio::vm::wasm_allocator alloc;
+inline sysio::vm::wasm_allocator* get_wasm_allocator() {
+   static sysio::vm::wasm_allocator alloc;
    return &alloc;
 }
 
 #ifdef __x86_64__
 #define BACKEND_TEST_CASE(name, tags) \
-  TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter, eosio::vm::jit)
+  TEMPLATE_TEST_CASE(name, tags, sysio::vm::interpreter, sysio::vm::jit)
 #else
 #define BACKEND_TEST_CASE(name, tags) \
-  TEMPLATE_TEST_CASE(name, tags, eosio::vm::interpreter)
+  TEMPLATE_TEST_CASE(name, tags, sysio::vm::interpreter)
 #endif
