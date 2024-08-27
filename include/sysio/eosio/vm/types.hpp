@@ -205,7 +205,7 @@ namespace sysio { namespace vm {
       inline uint32_t get_functions_size() const { return functions.size(); }
       inline uint32_t get_functions_total() const { return get_imported_functions_size() + get_functions_size(); }
       inline opcode* get_function_pc( uint32_t fidx ) const {
-         EOS_VM_ASSERT( fidx >= get_imported_functions_size(), wasm_interpreter_exception, "trying to get the PC of an imported function" );
+         SYS_VM_ASSERT( fidx >= get_imported_functions_size(), wasm_interpreter_exception, "trying to get the PC of an imported function" );
          return code[fidx-get_imported_functions_size()].code;
       }
 
@@ -214,7 +214,7 @@ namespace sysio { namespace vm {
       }
 
       inline uint32_t get_function_locals_size(uint32_t index) const {
-         EOS_VM_ASSERT(index >= get_imported_functions_size(), wasm_interpreter_exception, "imported functions do not have locals");
+         SYS_VM_ASSERT(index >= get_imported_functions_size(), wasm_interpreter_exception, "imported functions do not have locals");
          return code[index - get_imported_functions_size()].locals.size();
       }
 

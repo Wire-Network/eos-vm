@@ -88,7 +88,7 @@ namespace sysio { namespace vm {
          uint32_t fn = context.table_elem(index);
          const auto& expected_type = context.get_module().types.at(op.index);
          const auto& actual_type = context.get_module().get_function_type(fn);
-         EOS_VM_ASSERT(actual_type == expected_type, wasm_interpreter_exception, "bad call_indirect type");
+         SYS_VM_ASSERT(actual_type == expected_type, wasm_interpreter_exception, "bad call_indirect type");
          context.call(fn);
       }
       [[gnu::always_inline]] inline void operator()(const drop_t& op) {
@@ -559,8 +559,8 @@ namespace sysio { namespace vm {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_i32();
          auto&       lhs = context.peek_operand().to_i32();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.div_s divide by zero");
-         EOS_VM_ASSERT(!(lhs == std::numeric_limits<int32_t>::min() && rhs == -1), wasm_interpreter_exception,
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.div_s divide by zero");
+         SYS_VM_ASSERT(!(lhs == std::numeric_limits<int32_t>::min() && rhs == -1), wasm_interpreter_exception,
                        "i32.div_s traps when I32_MAX/-1");
          lhs /= rhs;
       }
@@ -568,14 +568,14 @@ namespace sysio { namespace vm {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_ui32();
          auto&       lhs = context.peek_operand().to_ui32();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.div_u divide by zero");
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.div_u divide by zero");
          lhs /= rhs;
       }
       [[gnu::always_inline]] inline void operator()(const i32_rem_s_t& op) {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_i32();
          auto&       lhs = context.peek_operand().to_i32();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.rem_s divide by zero");
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.rem_s divide by zero");
          if (UNLIKELY(lhs == std::numeric_limits<int32_t>::min() && rhs == -1))
             lhs = 0;
          else
@@ -585,7 +585,7 @@ namespace sysio { namespace vm {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_ui32();
          auto&       lhs = context.peek_operand().to_ui32();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.rem_u divide by zero");
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i32.rem_u divide by zero");
          lhs %= rhs;
       }
       [[gnu::always_inline]] inline void operator()(const i32_and_t& op) {
@@ -685,8 +685,8 @@ namespace sysio { namespace vm {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_i64();
          auto&       lhs = context.peek_operand().to_i64();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.div_s divide by zero");
-         EOS_VM_ASSERT(!(lhs == std::numeric_limits<int64_t>::min() && rhs == -1), wasm_interpreter_exception,
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.div_s divide by zero");
+         SYS_VM_ASSERT(!(lhs == std::numeric_limits<int64_t>::min() && rhs == -1), wasm_interpreter_exception,
                        "i64.div_s traps when I64_MAX/-1");
          lhs /= rhs;
       }
@@ -694,14 +694,14 @@ namespace sysio { namespace vm {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_ui64();
          auto&       lhs = context.peek_operand().to_ui64();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.div_u divide by zero");
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.div_u divide by zero");
          lhs /= rhs;
       }
       [[gnu::always_inline]] inline void operator()(const i64_rem_s_t& op) {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_i64();
          auto&       lhs = context.peek_operand().to_i64();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.rem_s divide by zero");
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.rem_s divide by zero");
          if (UNLIKELY(lhs == std::numeric_limits<int64_t>::min() && rhs == -1))
             lhs = 0;
          else
@@ -711,7 +711,7 @@ namespace sysio { namespace vm {
          context.inc_pc();
          const auto& rhs = context.pop_operand().to_ui64();
          auto&       lhs = context.peek_operand().to_ui64();
-         EOS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.rem_s divide by zero");
+         SYS_VM_ASSERT(rhs != 0, wasm_interpreter_exception, "i64.rem_s divide by zero");
          lhs %= rhs;
       }
       [[gnu::always_inline]] inline void operator()(const i64_and_t& op) {
@@ -1022,8 +1022,8 @@ namespace sysio { namespace vm {
             oper = i32_const_t{ _sysio_f32_trunc_i32s(oper.to_f32()) };
          } else {
             float af = oper.to_f32();
-            EOS_VM_ASSERT(!((af >= 2147483648.0f) || (af < -2147483648.0f)), wasm_interpreter_exception, "Error, f32.trunc_s/i32 overflow" );
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_s/i32 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 2147483648.0f) || (af < -2147483648.0f)), wasm_interpreter_exception, "Error, f32.trunc_s/i32 overflow" );
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_s/i32 unrepresentable");
             oper = i32_const_t{ static_cast<int32_t>(af) };
          }
       }
@@ -1034,8 +1034,8 @@ namespace sysio { namespace vm {
             oper = i32_const_t{ _sysio_f32_trunc_i32u(oper.to_f32()) };
          } else {
             float af = oper.to_f32();
-            EOS_VM_ASSERT(!((af >= 4294967296.0f) || (af <= -1.0f)),wasm_interpreter_exception, "Error, f32.trunc_u/i32 overflow");
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_u/i32 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 4294967296.0f) || (af <= -1.0f)),wasm_interpreter_exception, "Error, f32.trunc_u/i32 overflow");
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_u/i32 unrepresentable");
             oper = i32_const_t{ static_cast<uint32_t>(af) };
          }
       }
@@ -1046,8 +1046,8 @@ namespace sysio { namespace vm {
             oper = i32_const_t{ _sysio_f64_trunc_i32s(oper.to_f64()) };
          } else {
             double af = oper.to_f64();
-            EOS_VM_ASSERT(!((af >= 2147483648.0) || (af < -2147483648.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i32 overflow");
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_s/i32 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 2147483648.0) || (af < -2147483648.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i32 overflow");
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_s/i32 unrepresentable");
             oper = i32_const_t{ static_cast<int32_t>(af) };
          }
       }
@@ -1058,8 +1058,8 @@ namespace sysio { namespace vm {
             oper = i32_const_t{ _sysio_f64_trunc_i32u(oper.to_f64()) };
          } else {
             double af = oper.to_f64();
-            EOS_VM_ASSERT(!((af >= 4294967296.0) || (af <= -1.0)), wasm_interpreter_exception, "Error, f64.trunc_u/i32 overflow");
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_u/i32 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 4294967296.0) || (af <= -1.0)), wasm_interpreter_exception, "Error, f64.trunc_u/i32 overflow");
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_u/i32 unrepresentable");
             oper = i32_const_t{ static_cast<uint32_t>(af) };
          }
       }
@@ -1080,8 +1080,8 @@ namespace sysio { namespace vm {
             oper = i64_const_t{ _sysio_f32_trunc_i64s(oper.to_f32()) };
          } else {
             float af = oper.to_f32();
-            EOS_VM_ASSERT(!((af >= 9223372036854775808.0f) || (af < -9223372036854775808.0f)), wasm_interpreter_exception, "Error, f32.trunc_s/i64 overflow");
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_s/i64 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 9223372036854775808.0f) || (af < -9223372036854775808.0f)), wasm_interpreter_exception, "Error, f32.trunc_s/i64 overflow");
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_s/i64 unrepresentable");
             oper = i64_const_t{ static_cast<int64_t>(af) };
          }
       }
@@ -1092,8 +1092,8 @@ namespace sysio { namespace vm {
             oper = i64_const_t{ _sysio_f32_trunc_i64u(oper.to_f32()) };
          } else {
             float af = oper.to_f32();
-            EOS_VM_ASSERT(!((af >= 18446744073709551616.0f) || (af <= -1.0f)), wasm_interpreter_exception, "Error, f32.trunc_u/i64 overflow");
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_u/i64 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 18446744073709551616.0f) || (af <= -1.0f)), wasm_interpreter_exception, "Error, f32.trunc_u/i64 overflow");
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f32.trunc_u/i64 unrepresentable");
             oper = i64_const_t{ static_cast<uint64_t>(af) };
          }
       }
@@ -1104,8 +1104,8 @@ namespace sysio { namespace vm {
             oper = i64_const_t{ _sysio_f64_trunc_i64s(oper.to_f64()) };
          } else {
             double af = oper.to_f64();
-            EOS_VM_ASSERT(!((af >= 9223372036854775808.0) || (af < -9223372036854775808.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i64 overflow");
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_s/i64 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 9223372036854775808.0) || (af < -9223372036854775808.0)), wasm_interpreter_exception, "Error, f64.trunc_s/i64 overflow");
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_s/i64 unrepresentable");
             oper = i64_const_t{ static_cast<int64_t>(af) };
          }
       }
@@ -1116,8 +1116,8 @@ namespace sysio { namespace vm {
             oper = i64_const_t{ _sysio_f64_trunc_i64u(oper.to_f64()) };
          } else {
             double af = oper.to_f64();
-            EOS_VM_ASSERT(!((af >= 18446744073709551616.0) || (af <= -1.0)), wasm_interpreter_exception, "Error, f64.trunc_u/i64 overflow");
-            EOS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_u/i64 unrepresentable");
+            SYS_VM_ASSERT(!((af >= 18446744073709551616.0) || (af <= -1.0)), wasm_interpreter_exception, "Error, f64.trunc_u/i64 overflow");
+            SYS_VM_ASSERT(!__builtin_isnan(af), wasm_interpreter_exception, "Error, f64.trunc_u/i64 unrepresentable");
             oper = i64_const_t{ static_cast<uint64_t>(af) };
          }
       }

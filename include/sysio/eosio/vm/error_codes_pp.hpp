@@ -4,7 +4,7 @@
 
 #include <string>
 
-#ifdef EOS_VM_USE_BOOST
+#ifdef SYS_VM_USE_BOOST
 #   include <boost/system/error_code.hpp>
 #   include <boost/type_traits.hpp>
 using error_category_t = boost::system::error_category;

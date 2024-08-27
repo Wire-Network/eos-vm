@@ -43,7 +43,7 @@ steps:
       - "git clone $BUILDKITE_REPO eos-vm && cd eos-vm && git checkout $BUILDKITE_COMMIT && git submodule update --init --recursive"
       - "cd eos-vm && ./.cicd/build.sh"
     plugins:
-      - EOSIO/anka#v0.6.1:
+      - SYSIO/anka#v0.6.1:
           no-volume: true
           inherit-environment-vars: true
           vm-name: 10.14.6_6C_14G_80G
@@ -59,8 +59,8 @@ steps:
             - 'registry-1'
             - 'registry-2'
           pre-commands:
-            - "rm -rf mac-anka-fleet; git clone git@github.com:EOSIO/mac-anka-fleet.git && cd mac-anka-fleet && . ./ensure-tag.bash -u 12 -r 25G -a '-n'"
-      - EOSIO/skip-checkout#v0.1.1:
+            - "rm -rf mac-anka-fleet; git clone git@github.com:SYSIO/mac-anka-fleet.git && cd mac-anka-fleet && . ./ensure-tag.bash -u 12 -r 25G -a '-n'"
+      - SYSIO/skip-checkout#v0.1.1:
           cd: ~
     env:
       PROJECT_TAG: ${MACOS_10_14_TAG}
@@ -80,7 +80,7 @@ steps:
       - "git clone $BUILDKITE_REPO eos-vm && cd eos-vm && git checkout $BUILDKITE_COMMIT && git submodule update --init --recursive"
       - "cd eos-vm && ./.cicd/build.sh"
     plugins:
-      - EOSIO/anka#v0.6.1:
+      - SYSIO/anka#v0.6.1:
           no-volume: true
           inherit-environment-vars: true
           vm-name: 10.15.5_6C_14G_80G
@@ -96,8 +96,8 @@ steps:
             - 'registry-1'
             - 'registry-2'
           pre-commands:
-            - "rm -rf mac-anka-fleet; git clone git@github.com:EOSIO/mac-anka-fleet.git && cd mac-anka-fleet && . ./ensure-tag.bash -u 12 -r 25G -a '-n'"
-      - EOSIO/skip-checkout#v0.1.1:
+            - "rm -rf mac-anka-fleet; git clone git@github.com:SYSIO/mac-anka-fleet.git && cd mac-anka-fleet && . ./ensure-tag.bash -u 12 -r 25G -a '-n'"
+      - SYSIO/skip-checkout#v0.1.1:
           cd: ~
     env:
       PROJECT_TAG: ${MACOS_10_15_TAG}
@@ -155,7 +155,7 @@ steps:
       - "git clone $BUILDKITE_REPO eos-vm && cd eos-vm && git checkout $BUILDKITE_COMMIT && git submodule update --init --recursive"
       - "cd eos-vm && ./.cicd/test.sh ':darwin: macOS 10.14 - Build'"
     plugins:
-      - EOSIO/anka#v0.6.1:
+      - SYSIO/anka#v0.6.1:
           no-volume: true
           inherit-environment-vars: true
           vm-name: 10.14.6_6C_14G_80G
@@ -168,7 +168,7 @@ steps:
           failover-registries:
             - 'registry-1'
             - 'registry-2'
-      - EOSIO/skip-checkout#v0.1.1:
+      - SYSIO/skip-checkout#v0.1.1:
           cd: ~
     agents: "queue=mac-anka-node-fleet"
     timeout: $TEST_TIMEOUT
@@ -180,7 +180,7 @@ steps:
       - "git clone $BUILDKITE_REPO eos-vm && cd eos-vm && git checkout $BUILDKITE_COMMIT && git submodule update --init --recursive"
       - "cd eos-vm && ./.cicd/test.sh ':darwin: macOS 10.15 - Build'"
     plugins:
-      - EOSIO/anka#v0.6.1:
+      - SYSIO/anka#v0.6.1:
           no-volume: true
           inherit-environment-vars: true
           vm-name: 10.15.5_6C_14G_80G
@@ -193,7 +193,7 @@ steps:
           failover-registries:
             - 'registry-1'
             - 'registry-2'
-      - EOSIO/skip-checkout#v0.1.1:
+      - SYSIO/skip-checkout#v0.1.1:
           cd: ~
     agents: "queue=mac-anka-node-fleet"
     timeout: $TEST_TIMEOUT

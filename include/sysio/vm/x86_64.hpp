@@ -851,7 +851,7 @@ namespace sysio { namespace vm {
          emit_i64_relop(0x93);
       }
 
-#ifdef EOS_VM_SOFTFLOAT
+#ifdef SYS_VM_SOFTFLOAT
       // Make sure that the result doesn't contain any garbage bits in rax
       static uint64_t adapt_result(bool val) {
          return val?1:0;
@@ -2109,7 +2109,7 @@ namespace sysio { namespace vm {
 
       auto fixed_size_instr(std::size_t expected_bytes) {
          return scope_guard{[this, expected_code=code+expected_bytes](){
-#ifdef EOS_VM_VALIDATE_JIT_SIZE
+#ifdef SYS_VM_VALIDATE_JIT_SIZE
             assert(code == expected_code);
 #endif
             ignore_unused_variable_warning(code, expected_code);
@@ -2117,7 +2117,7 @@ namespace sysio { namespace vm {
       }
       auto variable_size_instr(std::size_t min, std::size_t max) {
          return scope_guard{[this, min_code=code+min,max_code=code+max](){
-#ifdef EOS_VM_VALIDATE_JIT_SIZE
+#ifdef SYS_VM_VALIDATE_JIT_SIZE
             assert(min_code <= code && code <= max_code);
 #endif
             ignore_unused_variable_warning(code, min_code, max_code);
@@ -2174,7 +2174,7 @@ namespace sysio { namespace vm {
          emit_bytes(0xff, 0xc3);
       }
 
-      static void unimplemented() { EOS_VM_ASSERT(false, wasm_parse_exception, "Sorry, not implemented."); }
+      static void unimplemented() { SYS_VM_ASSERT(false, wasm_parse_exception, "Sorry, not implemented."); }
 
       // clobbers %rax if the high bit of count is set.
       void emit_multipop(uint32_t count) {

@@ -26,7 +26,7 @@ namespace sysio { namespace vm {
       }
       template <typename T>
       T* alloc(size_t size = 1) {
-         EOS_VM_ASSERT((sizeof(T) * size) + index <= mem_size, wasm_bad_alloc, "wasm failed to allocate native");
+         SYS_VM_ASSERT((sizeof(T) * size) + index <= mem_size, wasm_bad_alloc, "wasm failed to allocate native");
          T* ret = (T*)(raw.get() + index);
          index += sizeof(T) * size;
          return ret;
@@ -36,7 +36,7 @@ namespace sysio { namespace vm {
       void reclaim(const T* ptr, size_t size=0) { /* noop for now */ }
 
       void free() {
-         EOS_VM_ASSERT(index > 0, wasm_double_free, "double free");
+         SYS_VM_ASSERT(index > 0, wasm_double_free, "double free");
          index = 0;
       }
       void                       reset() { index = 0; }
@@ -92,7 +92,7 @@ namespace sysio { namespace vm {
          contiguous_allocator(size_t size) {
             _size = align_to_page(size);
             _base = (char*)mmap(NULL, _size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            EOS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
+            SYS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
          }
          ~contiguous_allocator() { munmap(_base, align_to_page(_size)); }
 
@@ -103,7 +103,7 @@ namespace sysio { namespace vm {
             if (aligned > _size) {
                size_t new_size = align_to_page(aligned);
                char* new_base = (char*)mmap(NULL, new_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-               EOS_VM_ASSERT(new_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
+               SYS_VM_ASSERT(new_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
                memcpy(new_base, _base, _size);
                munmap(_base, _size);
                _size = new_size;
@@ -216,7 +216,7 @@ namespace sysio { namespace vm {
          std::size_t size = std::max(min_size, segment_size);
          void* base = mmap(nullptr, size, PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
          segment s{base, size};
-         EOS_VM_ASSERT(base != MAP_FAILED, wasm_bad_alloc, "failed to allocate jit segment");
+         SYS_VM_ASSERT(base != MAP_FAILED, wasm_bad_alloc, "failed to allocate jit segment");
          _segments.emplace_back(std::move(s));
          bool success = false;
          auto guard_1 = scope_guard{[&] { if(!success) { _segments.pop_back(); } }};
@@ -279,9 +279,9 @@ namespace sysio { namespace vm {
 
       // size in bytes
       growable_allocator(size_t size) {
-         EOS_VM_ASSERT(size <= max_memory_size, wasm_bad_alloc, "Too large initial memory size");
+         SYS_VM_ASSERT(size <= max_memory_size, wasm_bad_alloc, "Too large initial memory size");
          _base = (char*)mmap(NULL, max_memory_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         EOS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
+         SYS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
          if (size != 0) {
             size_t chunks_to_alloc = (align_offset<chunk_size>(size) / chunk_size);
             _size += (chunk_size * chunks_to_alloc);
@@ -304,7 +304,7 @@ namespace sysio { namespace vm {
          _offset = align_offset<alignof(T)>(_offset);
          // Evaluating the inequality in this form cannot cause integer overflow.
          // Once this assertion passes, the rest of the function is safe.
-         EOS_VM_ASSERT ((max_memory_size - _offset) / sizeof(T) >= size, wasm_bad_alloc, "Allocated too much memory");
+         SYS_VM_ASSERT ((max_memory_size - _offset) / sizeof(T) >= size, wasm_bad_alloc, "Allocated too much memory");
          size_t aligned = (sizeof(T) * size) + _offset;
          if (aligned > _size) {
             size_t chunks_to_alloc = align_offset<chunk_size>(aligned - _size) / chunk_size;
@@ -332,7 +332,7 @@ namespace sysio { namespace vm {
             auto & jit_alloc = jit_allocator::instance();
             void * executable_code = jit_alloc.alloc(_code_size);
             int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
-            EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+            SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
             std::memcpy(executable_code, _code_base, _code_size);
             is_jit = true;
             _code_base = (char*)executable_code;
@@ -357,8 +357,8 @@ namespace sysio { namespace vm {
        */
       template <typename T>
       void reclaim(const T* ptr, size_t size=0) {
-         EOS_VM_ASSERT( _offset / sizeof(T) >= size, wasm_bad_alloc, "reclaimed too much memory" );
-         EOS_VM_ASSERT( size == 0 || (char*)(ptr + size) == (_base + _offset), wasm_bad_alloc, "reclaiming memory must be strictly LIFO");
+         SYS_VM_ASSERT( _offset / sizeof(T) >= size, wasm_bad_alloc, "reclaimed too much memory" );
+         SYS_VM_ASSERT( size == 0 || (char*)(ptr + size) == (_base + _offset), wasm_bad_alloc, "reclaiming memory must be strictly LIFO");
          if ( size != 0 )
             _offset = ((char*)ptr - _base);
       }
@@ -369,12 +369,12 @@ namespace sysio { namespace vm {
       void finalize() {
          if(_capacity != _offset) {
             std::size_t final_size = align_to_page(_offset);
-            EOS_VM_ASSERT(munmap(_base + final_size, _capacity - final_size) == 0, wasm_bad_alloc, "failed to finalize growable_allocator");
+            SYS_VM_ASSERT(munmap(_base + final_size, _capacity - final_size) == 0, wasm_bad_alloc, "failed to finalize growable_allocator");
             _capacity = _size = _offset = final_size;
          }
       }
 
-      void free() { EOS_VM_ASSERT(false, wasm_bad_alloc, "unimplemented"); }
+      void free() { SYS_VM_ASSERT(false, wasm_bad_alloc, "unimplemented"); }
 
       void reset() { _offset = 0; }
 
@@ -400,7 +400,7 @@ namespace sysio { namespace vm {
       }
       fixed_stack_allocator(size_t max_size) : max_size(max_size) {
          raw = (T*)mmap(NULL, max_memory, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         EOS_VM_ASSERT( raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages" );
+         SYS_VM_ASSERT( raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages" );
          mprotect(raw, max_size * sizeof(T), PROT_READ | PROT_WRITE);
       }
       inline T* get_base_ptr() const { return raw; }
@@ -415,10 +415,10 @@ namespace sysio { namespace vm {
       template <typename T>
       void alloc(size_t size = 1 /*in pages*/) {
          if (size == 0) return;
-         EOS_VM_ASSERT(page >= 0, wasm_bad_alloc, "require memory to allocate");
-         EOS_VM_ASSERT(size + page <= max_pages, wasm_bad_alloc, "exceeded max number of pages");
+         SYS_VM_ASSERT(page >= 0, wasm_bad_alloc, "require memory to allocate");
+         SYS_VM_ASSERT(size + page <= max_pages, wasm_bad_alloc, "exceeded max number of pages");
          int err = mprotect(raw + (page_size * page), (page_size * size), PROT_READ | PROT_WRITE);
-         EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+         SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
          T* ptr    = (T*)(raw + (page_size * page));
          memset(ptr, 0, page_size * size);
          page += size;
@@ -426,11 +426,11 @@ namespace sysio { namespace vm {
       template <typename T>
       void free(std::size_t size) {
          if (size == 0) return;
-         EOS_VM_ASSERT(page >= 0, wasm_bad_alloc, "require memory to deallocate");
-         EOS_VM_ASSERT(size <= static_cast<uint32_t>(page), wasm_bad_alloc, "freed too many pages");
+         SYS_VM_ASSERT(page >= 0, wasm_bad_alloc, "require memory to deallocate");
+         SYS_VM_ASSERT(size <= static_cast<uint32_t>(page), wasm_bad_alloc, "freed too many pages");
          page -= size;
          int err = mprotect(raw + (page_size * page), (page_size * size), PROT_NONE);
-         EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+         SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
       }
       void free() {
          std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
@@ -439,9 +439,9 @@ namespace sysio { namespace vm {
       wasm_allocator() {
          std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
          raw  = (char*)mmap(NULL, max_memory + 2*syspagesize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         EOS_VM_ASSERT( raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages" );
+         SYS_VM_ASSERT( raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages" );
          int err = mprotect(raw, syspagesize, PROT_READ);
-         EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+         SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
          raw += syspagesize;
          page = 0;
       }
@@ -455,7 +455,7 @@ namespace sysio { namespace vm {
          } else {
             std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
             int err = mprotect(raw - syspagesize, syspagesize, PROT_READ);
-            EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+            SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
             page = 0;
          }
          if(new_pages > static_cast<uint32_t>(page)) {
@@ -471,7 +471,7 @@ namespace sysio { namespace vm {
             std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
             memset(raw, '\0', page_size * page); // zero the memory
             int err = mprotect(raw - syspagesize, page_size * page + syspagesize, PROT_NONE);
-            EOS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+            SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
          }
          page = -1;
       }

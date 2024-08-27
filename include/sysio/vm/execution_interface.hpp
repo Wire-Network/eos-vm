@@ -29,7 +29,7 @@ namespace sysio { namespace vm {
 
       template <typename T>
       inline void validate_pointer(const void* ptr, wasm_size_t len) const {
-         EOS_VM_ASSERT( len <= std::numeric_limits<wasm_size_t>::max() / (wasm_size_t)sizeof(T), wasm_interpreter_exception, "length will overflow" );
+         SYS_VM_ASSERT( len <= std::numeric_limits<wasm_size_t>::max() / (wasm_size_t)sizeof(T), wasm_interpreter_exception, "length will overflow" );
          volatile auto check_addr = *(reinterpret_cast<const char*>(ptr) + (len * sizeof(T)) - 1);
          ignore_unused_variable_warning(check_addr);
       }

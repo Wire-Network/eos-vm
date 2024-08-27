@@ -1,15 +1,15 @@
-## Building EOS-VM
-To build __EOS-VM__ you will need a fully C++17 compliant toolchain.
+## Building SYS-VM
+To build __SYS-VM__ you will need a fully C++17 compliant toolchain.
 
-Since __EOS-VM__ is designed to be a header only library (with the exception of softfloat), building the __EOS-VM__ CMake project is not necessary to use __EOS-VM__ in a C++ project. But, if you would like to use the softfloat capabilities, then building the library is required.
+Since __SYS-VM__ is designed to be a header only library (with the exception of softfloat), building the __SYS-VM__ CMake project is not necessary to use __SYS-VM__ in a C++ project. But, if you would like to use the softfloat capabilities, then building the library is required.
 
 ## Using The Example Tools
-Once you have built __EOS-VM__ you will notice 3 tools in the directory **build/tools**. You can run your test WASMs by executing the command `eos-vm-interp <path>/<wasm name>.wasm`, this will then run all exported functions within that WASM.  You can also run `bench-interp <path>/<wasm name>.wasm` and get two times in nanoseconds; the time to parse and instantiate your WASM and the time to execute your WASM.  The last tool is `hello-driver`. It is a prebaked in helloworld WASM and uses user input to bound the number of loops the printing occurs and whether it should assert. This tool is an example of how to setup a fully integrated solution with host functions.
+Once you have built __SYS-VM__ you will notice 3 tools in the directory **build/tools**. You can run your test WASMs by executing the command `eos-vm-interp <path>/<wasm name>.wasm`, this will then run all exported functions within that WASM.  You can also run `bench-interp <path>/<wasm name>.wasm` and get two times in nanoseconds; the time to parse and instantiate your WASM and the time to execute your WASM.  The last tool is `hello-driver`. It is a prebaked in helloworld WASM and uses user input to bound the number of loops the printing occurs and whether it should assert. This tool is an example of how to setup a fully integrated solution with host functions.
 
-These are designed to be modified by the end-user and are simply there to show how to easily integrate __EOS-VM__ into your own project.
+These are designed to be modified by the end-user and are simply there to show how to easily integrate __SYS-VM__ into your own project.
 
 ## Integrating Into Existing CMake Project
-Adding __EOS-VM__ as a submodule to your project and adding the subdirectory that contains __EOS-VM__, and adding **eos-vm** to the list of link libraries of your executables/libraries is all that is required to integrate into your project.  CMake options that can be passed into via command line or with CMake **set**.  These can be found in **CMakeLists.txt** and **modules/EosVMBuildUtils.cmake**, or by running `ccmake ..` instead of `cmake ..`.
+Adding __SYS-VM__ as a submodule to your project and adding the subdirectory that contains __SYS-VM__, and adding **eos-vm** to the list of link libraries of your executables/libraries is all that is required to integrate into your project.  CMake options that can be passed into via command line or with CMake **set**.  These can be found in **CMakeLists.txt** and **modules/EosVMBuildUtils.cmake**, or by running `ccmake ..` instead of `cmake ..`.
 
 ### Getting Started
  1) Start by creating a type alias of `sysio::vm::backend` with the host function class type.

@@ -30,7 +30,7 @@ link_libraries(Threads::Threads)
 # Gate against Windows builds.
 # ##################################################################################################
 if (WIN32)
-   message(FATAL_ERROR "EOS-VM currently only builds on Unix like OSes (Linux, Mac OSX)")
+   message(FATAL_ERROR "SYS-VM currently only builds on Unix like OSes (Linux, Mac OSX)")
 endif()
 
 # ##################################################################################################
@@ -64,7 +64,7 @@ target_compile_options( eos-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register
 # Enable debugging stats for eos-vm.
 # ##################################################################################################
 if(FULL_DEBUG_BUILD)
-   target_compile_definitions(eos-vm INTERFACE -DEOS_VM_FULL_DEBUG)
+   target_compile_definitions(eos-vm INTERFACE -DSYS_VM_FULL_DEBUG)
 endif()
 
 # ##################################################################################################
@@ -77,12 +77,12 @@ if(ENABLE_SOFTFLOAT)
       add_subdirectory(external)
       remove_definitions( -w )
    endif()
-   target_compile_definitions(eos-vm INTERFACE -DEOS_VM_SOFTFLOAT)
+   target_compile_definitions(eos-vm INTERFACE -DSYS_VM_SOFTFLOAT)
    target_link_libraries(eos-vm INTERFACE softfloat)
 endif()
 
 if(ENABLE_MEMORY_OPS_ALIGNMENT)
-   target_compile_definitions(eos-vm INTERFACE -DEOS_VM_ALIGN_MEMORY_OPS)
+   target_compile_definitions(eos-vm INTERFACE -DSYS_VM_ALIGN_MEMORY_OPS)
 endif()
 
 # ##################################################################################################
@@ -107,7 +107,7 @@ if(ENABLE_TESTS)
       include(ExternalProject)
       ExternalProject_Add(
          eos_vm_test_wasms
-         GIT_REPOSITORY "https://github.com/EOSIO/eos-vm-test-wasms.git"
+         GIT_REPOSITORY "https://github.com/SYSIO/eos-vm-test-wasms.git"
          SOURCE_DIR ${CMAKE_BINARY_DIR}/wasms
          BINARY_DIR ${CMAKE_BINARY_DIR}/wasms
          BUILD_ALWAYS 0
@@ -125,10 +125,10 @@ endif()
 # Installation.
 # ##################################################################################################
 if(ENABLE_INSTALL)
-   if(EOSVM_INSTALL_COMPONENT)
-      set(INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS COMPONENT ${EOSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
-      set(INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS COMPONENT ${EOSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
-      set(INSTALL_DIRECTORY_COMPONENT_ARGS COMPONENT ${EOSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
+   if(SYSVM_INSTALL_COMPONENT)
+      set(INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS COMPONENT ${SYSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
+      set(INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS COMPONENT ${SYSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
+      set(INSTALL_DIRECTORY_COMPONENT_ARGS COMPONENT ${SYSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
    else()
       set(INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS COMPONENT Libraries)
       set(INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS COMPONENT Headers)

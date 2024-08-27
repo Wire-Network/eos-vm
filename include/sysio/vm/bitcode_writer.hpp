@@ -79,7 +79,7 @@ namespace sysio { namespace vm {
          // Must be called after all cases
          uint32_t* emit_default(uint32_t depth_change) {
             auto result = emit_case(depth_change);
-            EOS_VM_ASSERT(_this->fb[_this->op_index].is_a<error_t>(), wasm_parse_exception, "overwrote br_table data");
+            SYS_VM_ASSERT(_this->fb[_this->op_index].is_a<error_t>(), wasm_parse_exception, "overwrote br_table data");
             return result;
          }
          br_table_t::elem_t* _br_tab;

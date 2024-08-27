@@ -58,11 +58,11 @@ namespace sysio { namespace vm {
    template<typename T>
    struct tag {};
 
-#define EOS_VM_FROM_WASM_ADD_TAG(...) (__VA_ARGS__, ::sysio::vm::tag<T> = {})
+#define SYS_VM_FROM_WASM_ADD_TAG(...) (__VA_ARGS__, ::sysio::vm::tag<T> = {})
 
-#define EOS_VM_FROM_WASM(TYPE, PARAMS) \
+#define SYS_VM_FROM_WASM(TYPE, PARAMS) \
    template <typename T>                    \
-   auto from_wasm EOS_VM_FROM_WASM_ADD_TAG PARAMS const -> std::enable_if_t<std::is_same_v<T, TYPE>, TYPE>
+   auto from_wasm SYS_VM_FROM_WASM_ADD_TAG PARAMS const -> std::enable_if_t<std::is_same_v<T, TYPE>, TYPE>
 
    template <typename Host, typename Execution_Interface=execution_interface>
    struct type_converter : public running_context<Host, Execution_Interface> {
@@ -73,7 +73,7 @@ namespace sysio { namespace vm {
       // TODO clean this up and figure out a more elegant way to get this for the macro
       using elem_type = operand_stack_elem;
 
-      EOS_VM_FROM_WASM(bool, (uint32_t value)) { return value ? 1 : 0; }
+      SYS_VM_FROM_WASM(bool, (uint32_t value)) { return value ? 1 : 0; }
       uint32_t to_wasm(bool&& value) { return value ? 1 : 0; }
       template<typename T>
       no_match_t to_wasm(T&&);
@@ -194,7 +194,7 @@ namespace sysio { namespace vm {
       static inline constexpr std::size_t total_operands_v = total_operands<Args, 0, Type_Converter>();
 
       template <typename S, typename Type_Converter>
-      constexpr inline static bool has_from_wasm_v = EOS_VM_HAS_TEMPLATE_MEMBER_TY(Type_Converter, from_wasm<S>);
+      constexpr inline static bool has_from_wasm_v = SYS_VM_HAS_TEMPLATE_MEMBER_TY(Type_Converter, from_wasm<S>);
 
       template <typename S, typename Type_Converter>
       constexpr inline static bool has_to_wasm_v =
@@ -284,16 +284,16 @@ namespace sysio { namespace vm {
       detail::invoke_on_impl<Once, 0, T>(static_cast<F&&>(func), args...);
    }
 
-#define EOS_VM_INVOKE_ON(TYPE, CONDITION) \
+#define SYS_VM_INVOKE_ON(TYPE, CONDITION) \
    sysio::vm::invoke_on<false, TYPE>(CONDITION, args...);
 
-#define EOS_VM_INVOKE_ON_ALL(CONDITION) \
+#define SYS_VM_INVOKE_ON_ALL(CONDITION) \
    sysio::vm::invoke_on<false, sysio::vm::invoke_on_all_t>(CONDITION, args...);
 
-#define EOS_VM_INVOKE_ONCE(CONDITION) \
+#define SYS_VM_INVOKE_ONCE(CONDITION) \
    sysio::vm::invoke_on<true, sysio::vm::invoke_on_all_t>(CONDITION, args...);
 
-#define EOS_VM_PRECONDITION(NAME, ...)                                       \
+#define SYS_VM_PRECONDITION(NAME, ...)                                       \
    struct NAME {                                                             \
       template <typename Type_Converter, typename... Args>                   \
       inline static decltype(auto) condition(Type_Converter& ctx, const Args&... args) { \
@@ -460,12 +460,12 @@ namespace sysio { namespace vm {
             std::string mod_name =
                   std::string((char*)mod.imports[i].module_str.raw(), mod.imports[i].module_str.size());
             std::string fn_name = std::string((char*)mod.imports[i].field_str.raw(), mod.imports[i].field_str.size());
-            EOS_VM_ASSERT(current_mappings.named_mapping.count({ mod_name, fn_name }), wasm_link_exception,
+            SYS_VM_ASSERT(current_mappings.named_mapping.count({ mod_name, fn_name }), wasm_link_exception,
                           std::string("no mapping for imported function ") + fn_name);
             imports[i] = current_mappings.named_mapping[{ mod_name, fn_name }];
             const import_entry& entry = mod.imports[i];
-            EOS_VM_ASSERT(entry.kind == Function, wasm_link_exception, std::string("importing non-function ") + fn_name);
-            EOS_VM_ASSERT(current_mappings.host_functions[imports[i]] == mod.types[entry.type.func_t], wasm_link_exception, std::string("wrong type for imported function ") + fn_name);
+            SYS_VM_ASSERT(entry.kind == Function, wasm_link_exception, std::string("importing non-function ") + fn_name);
+            SYS_VM_ASSERT(current_mappings.host_functions[imports[i]] == mod.types[entry.type.func_t], wasm_link_exception, std::string("wrong type for imported function ") + fn_name);
          }
       }
 

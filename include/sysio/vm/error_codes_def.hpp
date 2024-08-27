@@ -1,7 +1,7 @@
 #pragma once
 
-#define EOS_VM_OPEN_NAMESPACE namespace sysio::vm {
-#define EOS_VM_CLOSE_NAMESPACE }
+#define SYS_VM_OPEN_NAMESPACE namespace sysio::vm {
+#define SYS_VM_CLOSE_NAMESPACE }
 
 #include "error_codes_pp.hpp"
 
@@ -36,13 +36,13 @@ CREATE_ERROR_CODES(memory_errors, MEMORY_ERRORS)
 CREATE_ERROR_CODES(system_errors, SYSTEM_ERRORS)
 CREATE_ERROR_CODES(auxiliary_errors, AUXILIARY_ERRORS)
 
-#define _EOS_VM_ASSERT(expr, err_type)                                                                                  \
+#define _SYS_VM_ASSERT(expr, err_type)                                                                                  \
    if (!UNLIKELY(expr)) {                                                                                              \
       return err_type;                                                                                                 \
    }
 
 // assert but invalidate the enclosing class
-#define EOS_VM_ASSERT_INVALIDATE(expr, err_type)                                                                       \
+#define SYS_VM_ASSERT_INVALIDATE(expr, err_type)                                                                       \
    if (_valid = false; !UNLIKELY(expr)) {                                                                              \
       return err_type;                                                                                                 \
    }

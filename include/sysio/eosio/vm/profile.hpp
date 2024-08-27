@@ -295,17 +295,17 @@ struct profile_manager {
       event.sigev_value.sival_ptr = &current_data;
       event._sigev_un._tid = gettid();
       int res = timer_create(CLOCK_MONOTONIC, &event, &timer);
-      EOS_VM_ASSERT(res == 0, profile_exception, "Failed to start timer");
+      SYS_VM_ASSERT(res == 0, profile_exception, "Failed to start timer");
       struct itimerspec spec;
       spec.it_interval.tv_sec = 0;
       spec.it_interval.tv_nsec = profile_interval_us * 1000;
       spec.it_value.tv_sec = 0;
       spec.it_value.tv_nsec = profile_interval_us * 1000;
       res = timer_settime(timer, 0, &spec, nullptr);
-      EOS_VM_ASSERT(res == 0, profile_exception, "Failed to start timer");
+      SYS_VM_ASSERT(res == 0, profile_exception, "Failed to start timer");
    }
    void start(profile_data* data) {
-      EOS_VM_ASSERT(!current_data, profile_exception, "Already profiling in the current thread");
+      SYS_VM_ASSERT(!current_data, profile_exception, "Already profiling in the current thread");
       current_data = data;
    }
    void stop() {

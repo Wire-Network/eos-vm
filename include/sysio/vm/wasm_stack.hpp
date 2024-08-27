@@ -40,11 +40,11 @@ namespace sysio { namespace vm {
       ElemT pop() { return _store[--_index]; }
 
       ElemT& get(uint32_t index) const {
-         EOS_VM_ASSERT(index <= _index, wasm_interpreter_exception, "invalid stack index");
+         SYS_VM_ASSERT(index <= _index, wasm_interpreter_exception, "invalid stack index");
          return (ElemT&)_store[index];
       }
       void set(uint32_t index, const ElemT& el) {
-         EOS_VM_ASSERT(index <= _index, wasm_interpreter_exception, "invalid stack index");
+         SYS_VM_ASSERT(index <= _index, wasm_interpreter_exception, "invalid stack index");
          _store[index] = el;
       }
       void  eat(uint32_t index) { _index = index; }
