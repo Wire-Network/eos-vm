@@ -42,12 +42,12 @@ struct cnv : type_converter<example_host_methods> {
 SYS_VM_PRECONDITION(test_name,
       SYS_VM_INVOKE_ON(const char*, [&](auto&& nm, auto&&... rest) {
          std::string s = nm;
-         if (s == "eos-vm2")
+         if (s == "sys-vm2")
             throw "failure";
    }))
 
 /**
- * Simple implementation of an interpreter using eos-vm.
+ * Simple implementation of an interpreter using sys-vm.
  */
 int main(int argc, char** argv) {
    if (argc < 4) {
@@ -82,6 +82,6 @@ int main(int argc, char** argv) {
       bkend(ehm, "env", "apply", (uint64_t)std::atoi(argv[1]), (uint64_t)std::atoi(argv[2]),
             (uint64_t)std::atoi(argv[3]));
 
-   } catch (...) { std::cerr << "eos-vm interpreter error\n"; }
+   } catch (...) { std::cerr << "sys-vm interpreter error\n"; }
    return 0;
 }

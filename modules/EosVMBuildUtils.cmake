@@ -18,7 +18,7 @@ option(ENABLE_CCACHE "enable building with CCACHE or SCCACHE if they are present
 if(ENABLE_CCACHE)
    find_program(CCACHE_PROGRAM ccache)
    if(CCACHE_PROGRAM)
-      message(STATUS "eos-vm using ccache")
+      message(STATUS "sys-vm using ccache")
       set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE "${CCACHE_PROGRAM}")
       set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK "${CCACHE_PROGRAM}")
    endif()

@@ -6,10 +6,10 @@
 #include "error_codes_pp.hpp"
 
 // create a category for parser error codes
-GENERATE_ERROR_CATEGORY(parser_errors, "eos-vm parser errors")
-GENERATE_ERROR_CATEGORY(memory_errors, "eos-vm memory errors")
-GENERATE_ERROR_CATEGORY(system_errors, "eos-vm system errors")
-GENERATE_ERROR_CATEGORY(auxiliary_errors, "eos-vm auxiliary errors")
+GENERATE_ERROR_CATEGORY(parser_errors, "sys-vm parser errors")
+GENERATE_ERROR_CATEGORY(memory_errors, "sys-vm memory errors")
+GENERATE_ERROR_CATEGORY(system_errors, "sys-vm system errors")
+GENERATE_ERROR_CATEGORY(auxiliary_errors, "sys-vm auxiliary errors")
 
 // clang-format off
 #define PARSER_ERRORS(macro)                      \

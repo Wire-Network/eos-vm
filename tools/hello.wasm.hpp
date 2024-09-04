@@ -16,7 +16,7 @@
 //    print_num(c);
 //    sysio::check(b == c, "Failure B != C");
 //    for (uint64_t i = 0; i < a; i++)
-//        print_name("eos-vm");
+//        print_name("sys-vm");
 //    print_span(test_str, 5);
 //    print_span(test_str, 10);
 //}

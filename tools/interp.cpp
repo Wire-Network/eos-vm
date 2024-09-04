@@ -8,7 +8,7 @@ using namespace sysio;
 using namespace sysio::vm;
 
 /**
- * Simple implementation of an interpreter using eos-vm.
+ * Simple implementation of an interpreter using sys-vm.
  */
 int main(int argc, char** argv) {
    // Thread specific `allocator` used for wasm linear memory.
@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
       bkend.execute_all(wd);
 
    } catch ( const sysio::vm::exception& ex ) {
-      std::cerr << "eos-vm interpreter error\n";
+      std::cerr << "sys-vm interpreter error\n";
       std::cerr << ex.what() << " : " << ex.detail() << "\n";
    }
    return 0;

@@ -1,9 +1,9 @@
-AntelopeIO/eos-vm
+AntelopeIO/sys-vm
 
 Copyright (c) 2021-2022 EOS Network Foundation (ENF) and its contributors.  All rights reserved. 
 This ENF software is based upon:
 
-EOSIO/eos-vm
+EOSIO/sys-vm
 Copyright (c) 2017-2019 block.one and its contributors. All rights reserved.
 
 EOS VM LICENSE V1.0
