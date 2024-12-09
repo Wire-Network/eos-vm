@@ -1,12 +1,12 @@
 // Code used to generate this wasm
-// compile with eosio-cpp -o hello.wasm hello.cpp
-//#include <eosio/eosio.hpp>
-//#include <eosio/print.hpp>
+// compile with sysio-cpp -o hello.wasm hello.cpp
+//#include <sysio/sysio.hpp>
+//#include <sysio/print.hpp>
 //
 // extern "C" {
-//[[eosio::wasm_import]] void print_name(const char*);
-//[[eosio::wasm_import]] void print_num(uint64_t);
-//[[eosio::wasm_import]] void print_span(const char*, std::size_t);
+//[[sysio::wasm_import]] void print_name(const char*);
+//[[sysio::wasm_import]] void print_num(uint64_t);
+//[[sysio::wasm_import]] void print_span(const char*, std::size_t);
 //
 // void apply(uint64_t a, uint64_t b, uint64_t c)
 //{
@@ -14,9 +14,9 @@
 //    print_num(a);
 //    print_num(b);
 //    print_num(c);
-//    eosio::check(b == c, "Failure B != C");
+//    sysio::check(b == c, "Failure B != C");
 //    for (uint64_t i = 0; i < a; i++)
-//        print_name("eos-vm");
+//        print_name("sys-vm");
 //    print_span(test_str, 5);
 //    print_span(test_str, 10);
 //}

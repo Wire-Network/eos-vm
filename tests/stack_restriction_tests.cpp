@@ -1,14 +1,14 @@
 #include <iostream>
 #include <vector>
 
-#include <eosio/vm/backend.hpp>
-#include <eosio/vm/watchdog.hpp>
+#include <sysio/vm/backend.hpp>
+#include <sysio/vm/watchdog.hpp>
 
 #include "utils.hpp"
 #include <catch2/catch.hpp>
 
-using namespace eosio;
-using namespace eosio::vm;
+using namespace sysio;
+using namespace sysio::vm;
 
 extern wasm_allocator wa;
 

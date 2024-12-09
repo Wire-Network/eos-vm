@@ -1,18 +1,18 @@
 #include <iostream>
 #include <list>
 
-#include <eosio/vm/backend.hpp>
-#include <eosio/vm/watchdog.hpp>
+#include <sysio/vm/backend.hpp>
+#include <sysio/vm/watchdog.hpp>
 
 #include "utils.hpp"
 #include <catch2/catch.hpp>
 
-using namespace eosio;
-using namespace eosio::vm;
+using namespace sysio;
+using namespace sysio::vm;
 
 #pragma GCC push_options
 #pragma GCC optimize ("O0")
-BACKEND_TEST_CASE("Test instantiating multiple instances of eos-vm",
+BACKEND_TEST_CASE("Test instantiating multiple instances of sys-vm",
                   "[instantiation_test]") {
    std::vector<uint8_t> test_wasm = {
      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60,

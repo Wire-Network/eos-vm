@@ -7,10 +7,10 @@
 
 #include "utils.hpp"
 
-#include <eosio/vm/backend.hpp>
+#include <sysio/vm/backend.hpp>
 
-using namespace eosio;
-using namespace eosio::vm;
+using namespace sysio;
+using namespace sysio::vm;
 
 TEST_CASE("small parse test", "[small_parse_test]") {
    module mod;

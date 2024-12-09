@@ -1,12 +1,12 @@
-#include <eosio/vm/backend.hpp>
-#include <eosio/vm/host_function.hpp>
+#include <sysio/vm/backend.hpp>
+#include <sysio/vm/host_function.hpp>
 
 #include "utils.hpp"
 
 #include <catch2/catch.hpp>
 #include <exception>
 
-using namespace eosio::vm;
+using namespace sysio::vm;
 
 static int check = 0;
 static int check2 = 0;
@@ -37,49 +37,49 @@ bool check_exception_msg(F&& func, const std::string& chck) {
 #define CHECK_MSG(Msg, ...) \
    CHECK(check_exception_msg<std::runtime_error>([&](){ __VA_ARGS__; }, Msg))
 
-EOS_VM_PRECONDITION(int_equals_42,
-      EOS_VM_INVOKE_ON(int, [&](auto arg, auto&&... rest) {
+SYS_VM_PRECONDITION(int_equals_42,
+      SYS_VM_INVOKE_ON(int, [&](auto arg, auto&&... rest) {
          if (arg != 42)
             throw std::runtime_error("arg != 42");
       }));
 
-EOS_VM_PRECONDITION(float_equals_42,
-      EOS_VM_INVOKE_ON(float, [&](auto arg, auto&&... rest) {
+SYS_VM_PRECONDITION(float_equals_42,
+      SYS_VM_INVOKE_ON(float, [&](auto arg, auto&&... rest) {
          if (arg != 42.42f)
             throw std::runtime_error("arg != 42.42f");
       }));
 
-EOS_VM_PRECONDITION(str_equals_hello,
-      EOS_VM_INVOKE_ON(const char*, [&](auto arg, auto&&... rest) {
+SYS_VM_PRECONDITION(str_equals_hello,
+      SYS_VM_INVOKE_ON(const char*, [&](auto arg, auto&&... rest) {
          if (memcmp(arg, "hello", 5) != 0)
             throw std::runtime_error("str != hello");
       }));
 
-EOS_VM_PRECONDITION(span_and_check,
-      EOS_VM_INVOKE_ON_ALL([&](auto arg, auto&&... rest) {
+SYS_VM_PRECONDITION(span_and_check,
+      SYS_VM_INVOKE_ON_ALL([&](auto arg, auto&&... rest) {
          if constexpr (is_span_type_v<decltype(arg)>) {
             if (memcmp(arg.data(), "hellohe", arg.size_bytes()) != 0)
                throw std::runtime_error("span<T> != hellohe");
          }
       }));
 
-EOS_VM_PRECONDITION(check2_once,
-      EOS_VM_INVOKE_ONCE([&](auto&&... args) {
+SYS_VM_PRECONDITION(check2_once,
+      SYS_VM_INVOKE_ONCE([&](auto&&... args) {
          check2++;
       }));
 
-EOS_VM_PRECONDITION(check2_all,
-      EOS_VM_INVOKE_ON_ALL([&](auto&&... args) {
+SYS_VM_PRECONDITION(check2_all,
+      SYS_VM_INVOKE_ON_ALL([&](auto&&... args) {
          check2++;
       }));
 
 struct cnv : type_converter<standalone_function_t> {
    using type_converter::from_wasm;
    using type_converter::type_converter;
-   EOS_VM_FROM_WASM(char*, (void* ptr)) { return static_cast<char*>(ptr); }
-   EOS_VM_FROM_WASM(const char*, (void* ptr)) { return static_cast<char*>(ptr); }
-   EOS_VM_FROM_WASM(float*, (void* ptr)) { return static_cast<float*>(ptr); }
-   EOS_VM_FROM_WASM(int&, (void* ptr)) { return *static_cast<int*>(ptr); }
+   SYS_VM_FROM_WASM(char*, (void* ptr)) { return static_cast<char*>(ptr); }
+   SYS_VM_FROM_WASM(const char*, (void* ptr)) { return static_cast<char*>(ptr); }
+   SYS_VM_FROM_WASM(float*, (void* ptr)) { return static_cast<float*>(ptr); }
+   SYS_VM_FROM_WASM(int&, (void* ptr)) { return *static_cast<int*>(ptr); }
 };
 
 BACKEND_TEST_CASE("Testing invoke_on", "[preconditions_tests]") {

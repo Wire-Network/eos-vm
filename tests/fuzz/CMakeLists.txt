@@ -15,7 +15,7 @@ function(add_libfuzzer_test name)
     ${add_libfuzzer_test_SOURCES}
  )
  target_compile_options(LLVMFuzzer-${name} PUBLIC "-fsanitize=fuzzer,address")
- target_link_libraries(LLVMFuzzer-${name} PUBLIC eos-vm "-fsanitize=fuzzer,address")
+ target_link_libraries(LLVMFuzzer-${name} PUBLIC sys-vm "-fsanitize=fuzzer,address")
 endfunction()
 
 add_libfuzzer_test(wasm_fuzz_test SOURCES fuzz_driver.cpp)

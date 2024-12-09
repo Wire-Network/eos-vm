@@ -1,8 +1,8 @@
-#include <eosio/wasm_backend/backend.hpp>
-#include <eosio/vm/watchdog.hpp>
+#include <sysio/wasm_backend/backend.hpp>
+#include <sysio/vm/watchdog.hpp>
 
-using namespace eosio;
-using namespace eosio::wasm_backend;
+using namespace sysio;
+using namespace sysio::wasm_backend;
 
 extern "C" int LLVMFuzzerTestOneInput( const uint8_t* data, size_t size ) {
    wasm_allocator wa;

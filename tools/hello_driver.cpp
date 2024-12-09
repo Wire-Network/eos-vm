@@ -1,13 +1,13 @@
-#include <eosio/vm/backend.hpp>
-#include <eosio/vm/error_codes.hpp>
-#include <eosio/vm/host_function.hpp>
-#include <eosio/vm/watchdog.hpp>
+#include <sysio/vm/backend.hpp>
+#include <sysio/vm/error_codes.hpp>
+#include <sysio/vm/host_function.hpp>
+#include <sysio/vm/watchdog.hpp>
 
 #include <iostream>
 #include <string>
 
-using namespace eosio;
-using namespace eosio::vm;
+using namespace sysio;
+using namespace sysio::vm;
 
 #include "hello.wasm.hpp"
 
@@ -19,7 +19,7 @@ struct example_host_methods {
    void* memset(char* ptr, int x, size_t n) { return ::memset(ptr, x, n); }
    std::string  field = "";
 
-   void eosio_assert(bool test, const char* msg) {
+   void sysio_assert(bool test, const char* msg) {
       if (!test) {
          std::cout << msg << std::endl;
          throw 0;
@@ -34,20 +34,20 @@ struct example_host_methods {
 struct cnv : type_converter<example_host_methods> {
    using type_converter::type_converter;
    using type_converter::from_wasm;
-   EOS_VM_FROM_WASM(bool, (uint32_t value)) { return value ? 1 : 0; }
-   EOS_VM_FROM_WASM(char*, (void* ptr)) { return static_cast<char*>(ptr); }
-   EOS_VM_FROM_WASM(const char*, (void* ptr)) { return static_cast<char*>(ptr); }
+   SYS_VM_FROM_WASM(bool, (uint32_t value)) { return value ? 1 : 0; }
+   SYS_VM_FROM_WASM(char*, (void* ptr)) { return static_cast<char*>(ptr); }
+   SYS_VM_FROM_WASM(const char*, (void* ptr)) { return static_cast<char*>(ptr); }
 };
 
-EOS_VM_PRECONDITION(test_name,
-      EOS_VM_INVOKE_ON(const char*, [&](auto&& nm, auto&&... rest) {
+SYS_VM_PRECONDITION(test_name,
+      SYS_VM_INVOKE_ON(const char*, [&](auto&& nm, auto&&... rest) {
          std::string s = nm;
-         if (s == "eos-vm2")
+         if (s == "sys-vm2")
             throw "failure";
    }))
 
 /**
- * Simple implementation of an interpreter using eos-vm.
+ * Simple implementation of an interpreter using sys-vm.
  */
 int main(int argc, char** argv) {
    if (argc < 4) {
@@ -57,13 +57,13 @@ int main(int argc, char** argv) {
    // Thread specific `allocator` used for wasm linear memory.
    wasm_allocator wa;
    // Specific the backend with example_host_methods for host functions.
-   using rhf_t     = eosio::vm::registered_host_functions<example_host_methods, execution_interface, cnv>;
-   using backend_t = eosio::vm::backend<rhf_t>;
+   using rhf_t     = sysio::vm::registered_host_functions<example_host_methods, execution_interface, cnv>;
+   using backend_t = sysio::vm::backend<rhf_t>;
 
    // register print_num
    rhf_t::add<&example_host_methods::print_num>("env", "print_num");
-   // register eosio_assert
-   rhf_t::add<&example_host_methods::eosio_assert>("env", "eosio_assert");
+   // register sysio_assert
+   rhf_t::add<&example_host_methods::sysio_assert>("env", "sysio_assert");
    // register print_name
    rhf_t::add<&example_host_methods::print_name, test_name>("env", "print_name");
    // finally register memset
@@ -82,6 +82,6 @@ int main(int argc, char** argv) {
       bkend(ehm, "env", "apply", (uint64_t)std::atoi(argv[1]), (uint64_t)std::atoi(argv[2]),
             (uint64_t)std::atoi(argv[3]));
 
-   } catch (...) { std::cerr << "eos-vm interpreter error\n"; }
+   } catch (...) { std::cerr << "sys-vm interpreter error\n"; }
    return 0;
 }

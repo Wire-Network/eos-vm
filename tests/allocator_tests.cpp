@@ -1,9 +1,9 @@
-#include <eosio/vm/allocator.hpp>
+#include <sysio/vm/allocator.hpp>
 
 #include <catch2/catch.hpp>
 
-using namespace eosio;
-using namespace eosio::vm;
+using namespace sysio;
+using namespace sysio::vm;
 
 template<typename T>
 bool check_alignment(T* ptr) {
