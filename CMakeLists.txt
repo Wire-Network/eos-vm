@@ -30,7 +30,7 @@ link_libraries(Threads::Threads)
 # Gate against Windows builds.
 # ##################################################################################################
 if (WIN32)
-   message(FATAL_ERROR "EOS-VM currently only builds on Unix like OSes (Linux, Mac OSX)")
+   message(FATAL_ERROR "SYS-VM currently only builds on Unix like OSes (Linux, Mac OSX)")
 endif()
 
 # ##################################################################################################
@@ -48,7 +48,7 @@ cmake_dependent_option(ENABLE_SPEC_TESTS "enable wasm spec tests" ON "ENABLE_TES
 cmake_dependent_option(ENABLE_FUZZ_TESTS "enable fuzz testing" OFF "ENABLE_TESTS" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/modules")
-include(EosVMBuildUtils)
+include(SysVMBuildUtils)
 
 # ##################################################################################################
 # Create the sys-vm library.
