@@ -23,8 +23,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 set(CMAKE_CXX_FLAGS "-fdiagnostics-color=always")
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
-find_package(Threads)
-link_libraries(Threads::Threads)
+
+
+
 
 # ##################################################################################################
 # Gate against Windows builds.
@@ -37,8 +38,6 @@ endif()
 # Defined options for building or integrating sys-vm.
 # ##################################################################################################
 include(CMakeDependentOption)
-option(ENABLE_SOFTFLOAT "enable the backend to use deterministic software floating point operations"
-	ON)
 option(FULL_DEBUG_BUILD "enables stack dumping and instruction tracing" OFF)
 option(ENABLE_INSTALL "enable this library to be installed" ON)
 option(ENABLE_MEMORY_OPS_ALIGNMENT "enable the backend to obey alignment hints" OFF)
@@ -55,8 +54,7 @@ include(SysVMBuildUtils)
 # ##################################################################################################
 add_library(sys-vm INTERFACE)
 target_include_directories(sys-vm
-                           INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include
-                                     ${CMAKE_CURRENT_SOURCE_DIR}/external/softfloat/source/include)
+                           INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # ignore the C++17 register warning until clean up
 target_compile_options( sys-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register> )
 
@@ -70,15 +68,9 @@ endif()
 # ##################################################################################################
 # Option specific build configurations.
 # ##################################################################################################
-if(ENABLE_SOFTFLOAT)
-   if(NOT TARGET softfloat)
-      # Suppress warnings on 3rdParty Library
-      add_definitions( -w )
-      add_subdirectory(external)
-      remove_definitions( -w )
-   endif()
+if(ENABLE_SOFTFLOAT AND TARGET softfloat::softfloat)
    target_compile_definitions(sys-vm INTERFACE -DSYS_VM_SOFTFLOAT)
-   target_link_libraries(sys-vm INTERFACE softfloat)
+   target_link_libraries(sys-vm INTERFACE softfloat::softfloat)
 endif()
 
 if(ENABLE_MEMORY_OPS_ALIGNMENT)
@@ -97,17 +89,17 @@ endif()
 # ##################################################################################################
 if(ENABLE_TESTS)
    include(CTest)
-   set(CATCH_BUILD_TESTING OFF CACHE BOOL "disable building tests")
-   set(CATCH_INSTALL_DOCS OFF CACHE BOOL "disable installing docs")
-   set(CATCH_INSTALL_HELPERS OFF CACHE BOOL "disable installing helpers")
-   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/Catch2)
-   include(external/Catch2/contrib/Catch.cmake)
+#   set(CATCH_BUILD_TESTING OFF CACHE BOOL "disable building tests")
+#   set(CATCH_INSTALL_DOCS OFF CACHE BOOL "disable installing docs")
+#   set(CATCH_INSTALL_HELPERS OFF CACHE BOOL "disable installing helpers")
+#   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/Catch2)
+#   include(external/Catch2/contrib/Catch.cmake)
    add_subdirectory(tests)
    if (NOT EXISTS ${CMAKE_BINARY_DIR}/wasms AND ENABLE_SPEC_TESTS)
       include(ExternalProject)
       ExternalProject_Add(
          sys_vm_test_wasms
-         GIT_REPOSITORY "https://github.com/SYSIO/sys-vm-test-wasms.git"
+         GIT_REPOSITORY "https://github.com/wire-network/wire-sys-vm-test-wasms.git"
          SOURCE_DIR ${CMAKE_BINARY_DIR}/wasms
          BINARY_DIR ${CMAKE_BINARY_DIR}/wasms
          BUILD_ALWAYS 0
