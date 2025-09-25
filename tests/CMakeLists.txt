@@ -1,18 +1,21 @@
 # #############
 # Defines unit tests, spec tests and fuzz tests for sys-vm.
 # ############
+
 option(ENABLE_TESTS "enable building of unit tests, spec tests." ON)
 cmake_dependent_option(ENABLE_FUZZ_TESTS "enable fuzz testing" OFF "ENABLE_TESTS" ON)
 
 configure_file(wasm_config.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/wasm_config.hpp)
-include_directories(${CMAKE_SOURCE_DIR}/external/Catch2/single_include)
+
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
+
 #add_subdirectory(memory_tests)
 if (ENABLE_FUZZ_TESTS)
    add_subdirectory(fuzz)
 endif()
 
 enable_testing()
+include(Catch)
 
 # ##############
 # define spec tests
@@ -75,7 +78,7 @@ add_spec_test_impl(e_module ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/module.wast)
 add_spec_test_impl(e_table ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/table.wast)
 
 add_executable( sys_vm_spec_tests main.cpp ${SPEC_TESTS} )
-target_link_libraries( sys_vm_spec_tests sys-vm Catch2::Catch2 )
+target_link_libraries( sys_vm_spec_tests sys-vm Catch2::Catch2WithMain )
 target_include_directories( sys_vm_spec_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} )
 target_include_directories( sys_vm_spec_tests PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include )
 target_include_directories( sys_vm_spec_tests PUBLIC ${CMAKE_CURRENT_BINARY_DIR}/spec )
@@ -121,7 +124,7 @@ add_executable(unit_tests main.cpp
                           backend_tests.cpp
                           vector_tests.cpp)
 
-target_link_libraries(unit_tests sys-vm Catch2::Catch2)
+target_link_libraries(unit_tests sys-vm Catch2::Catch2WithMain)
 
 # ##############
 # disable catch2 from installing it's own signal handlers

@@ -9,7 +9,7 @@ set(VERSION_PATCH 0)
 set(VERSION_SUFFIX rc1)
 project(sys-vm VERSION ${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH})
 
-if (VERSION_SUFFIX)
+if(VERSION_SUFFIX)
    set(VERSION_FULL "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}-${VERSION_SUFFIX}")
 else()
    set(VERSION_FULL "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_PATCH}")
@@ -30,7 +30,7 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 # ##################################################################################################
 # Gate against Windows builds.
 # ##################################################################################################
-if (WIN32)
+if(WIN32)
    message(FATAL_ERROR "SYS-VM currently only builds on Unix like OSes (Linux, Mac OSX)")
 endif()
 
@@ -46,7 +46,8 @@ option(ENABLE_TESTS "enable building of unit tests, spec tests" OFF)
 cmake_dependent_option(ENABLE_SPEC_TESTS "enable wasm spec tests" ON "ENABLE_TESTS" ON)
 cmake_dependent_option(ENABLE_FUZZ_TESTS "enable fuzz testing" OFF "ENABLE_TESTS" ON)
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/modules")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+include(dependencies)
 include(SysVMBuildUtils)
 
 # ##################################################################################################
@@ -54,9 +55,9 @@ include(SysVMBuildUtils)
 # ##################################################################################################
 add_library(sys-vm INTERFACE)
 target_include_directories(sys-vm
-                           INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+   INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 # ignore the C++17 register warning until clean up
-target_compile_options( sys-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register> )
+target_compile_options(sys-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register>)
 
 # ##################################################################################################
 # Enable debugging stats for sys-vm.
@@ -81,7 +82,7 @@ endif()
 # Build sys-vm tools.
 # ##################################################################################################
 if(ENABLE_TOOLS)
-add_subdirectory(tools)
+   add_subdirectory(tools)
 endif()
 
 # ##################################################################################################
@@ -89,13 +90,12 @@ endif()
 # ##################################################################################################
 if(ENABLE_TESTS)
    include(CTest)
-#   set(CATCH_BUILD_TESTING OFF CACHE BOOL "disable building tests")
-#   set(CATCH_INSTALL_DOCS OFF CACHE BOOL "disable installing docs")
-#   set(CATCH_INSTALL_HELPERS OFF CACHE BOOL "disable installing helpers")
-#   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/external/Catch2)
-#   include(external/Catch2/contrib/Catch.cmake)
+   #   set(CATCH_BUILD_TESTING OFF CACHE BOOL "disable building tests")
+   #   set(CATCH_INSTALL_DOCS OFF CACHE BOOL "disable installing docs")
+   #   set(CATCH_INSTALL_HELPERS OFF CACHE BOOL "disable installing helpers")
+
    add_subdirectory(tests)
-   if (NOT EXISTS ${CMAKE_BINARY_DIR}/wasms AND ENABLE_SPEC_TESTS)
+   if(NOT EXISTS ${CMAKE_BINARY_DIR}/wasms/.fetched AND ENABLE_SPEC_TESTS)
       include(ExternalProject)
       ExternalProject_Add(
          sys_vm_test_wasms
@@ -110,6 +110,7 @@ if(ENABLE_TESTS)
          PATCH_COMMAND ""
          CONFIGURE_COMMAND ""
       )
+      file(TOUCH ${CMAKE_BINARY_DIR}/wasms/.fetched)
    endif()
 endif()
 
@@ -129,12 +130,12 @@ if(ENABLE_INSTALL)
    include(GNUInstallDirs)
    message(STATUS "Installing...")
    install(TARGETS sys-vm
-            LIBRARY
-               DESTINATION ${CMAKE_INSTALL_LIBDIR}
-               ${INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS}
-            PUBLIC_HEADER
-               DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-               ${INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS})
+      LIBRARY
+      DESTINATION ${CMAKE_INSTALL_LIBDIR}
+      ${INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS}
+      PUBLIC_HEADER
+      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+      ${INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS})
 
    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/sysio
       DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
