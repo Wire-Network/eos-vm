@@ -38,7 +38,11 @@ endif()
 # Defined options for building or integrating sys-vm.
 # ##################################################################################################
 include(CMakeDependentOption)
-option(FULL_DEBUG_BUILD "enables stack dumping and instruction tracing" OFF)
+option(
+   FULL_DEBUG_BUILD 
+   "enables stack dumping and instruction tracing" 
+   $<IF:$<CONFIG:Debug>,ON,OFF>
+)
 option(ENABLE_INSTALL "enable this library to be installed" ON)
 option(ENABLE_MEMORY_OPS_ALIGNMENT "enable the backend to obey alignment hints" OFF)
 option(ENABLE_TOOLS "enable building of tools" ON)
@@ -47,39 +51,47 @@ cmake_dependent_option(ENABLE_SPEC_TESTS "enable wasm spec tests" ON "ENABLE_TES
 cmake_dependent_option(ENABLE_FUZZ_TESTS "enable fuzz testing" OFF "ENABLE_TESTS" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-include(dependencies)
-include(SysVMBuildUtils)
+include(dependencies NO_POLICY_SCOPE)
+include(SysVMBuildUtils NO_POLICY_SCOPE)
 
 # ##################################################################################################
-# Create the sys-vm library.
+# SYS_VM: Create the sys-vm library.
 # ##################################################################################################
 add_library(sys-vm INTERFACE)
-target_include_directories(sys-vm
-   INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/include)
-# ignore the C++17 register warning until clean up
-target_compile_options(sys-vm INTERFACE $<$<COMPILE_LANGUAGE:CXX>:-Wno-register>)
+
+# SYS_VM: Add softfloat include path, defs & links directly for legacy support
+target_include_directories(
+   sys-vm
+   INTERFACE
+   "${CMAKE_CURRENT_SOURCE_DIR}/include"   
+   "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/softfloat"
+)
+target_compile_definitions(sys-vm INTERFACE -DSYS_VM_SOFTFLOAT)
+target_link_libraries(sys-vm INTERFACE softfloat::softfloat)
+
+# SYS_VM: ignore the C++17 register warning until clean up
+target_compile_options(
+   sys-vm 
+   INTERFACE 
+   $<$<COMPILE_LANGUAGE:CXX>:-Wno-register>
+)
 
 # ##################################################################################################
-# Enable debugging stats for sys-vm.
+# DEBUG: Enable debugging stats for sys-vm.
 # ##################################################################################################
 if(FULL_DEBUG_BUILD)
    target_compile_definitions(sys-vm INTERFACE -DSYS_VM_FULL_DEBUG)
 endif()
 
 # ##################################################################################################
-# Option specific build configurations.
+# MEMORY ALIGNMENT
 # ##################################################################################################
-if(ENABLE_SOFTFLOAT AND TARGET softfloat::softfloat)
-   target_compile_definitions(sys-vm INTERFACE -DSYS_VM_SOFTFLOAT)
-   target_link_libraries(sys-vm INTERFACE softfloat::softfloat)
-endif()
-
 if(ENABLE_MEMORY_OPS_ALIGNMENT)
    target_compile_definitions(sys-vm INTERFACE -DSYS_VM_ALIGN_MEMORY_OPS)
 endif()
 
 # ##################################################################################################
-# Build sys-vm tools.
+# TOOLS: Build sys-vm tools.
 # ##################################################################################################
 if(ENABLE_TOOLS)
    add_subdirectory(tools)
@@ -90,28 +102,8 @@ endif()
 # ##################################################################################################
 if(ENABLE_TESTS)
    include(CTest)
-   #   set(CATCH_BUILD_TESTING OFF CACHE BOOL "disable building tests")
-   #   set(CATCH_INSTALL_DOCS OFF CACHE BOOL "disable installing docs")
-   #   set(CATCH_INSTALL_HELPERS OFF CACHE BOOL "disable installing helpers")
-
-   add_subdirectory(tests)
-   if(NOT EXISTS ${CMAKE_BINARY_DIR}/wasms/.fetched AND ENABLE_SPEC_TESTS)
-      include(ExternalProject)
-      ExternalProject_Add(
-         sys_vm_test_wasms
-         GIT_REPOSITORY "https://github.com/wire-network/wire-sys-vm-test-wasms.git"
-         SOURCE_DIR ${CMAKE_BINARY_DIR}/wasms
-         BINARY_DIR ${CMAKE_BINARY_DIR}/wasms
-         BUILD_ALWAYS 0
-         BUILD_COMMAND ""
-         TEST_COMMAND ""
-         INSTALL_COMMAND ""
-         UPDATE_COMMAND ""
-         PATCH_COMMAND ""
-         CONFIGURE_COMMAND ""
-      )
-      file(TOUCH ${CMAKE_BINARY_DIR}/wasms/.fetched)
-   endif()
+   
+   add_subdirectory(tests)   
 endif()
 
 # ##################################################################################################

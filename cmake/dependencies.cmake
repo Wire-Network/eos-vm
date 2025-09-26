@@ -10,4 +10,5 @@ file(MAKE_DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/catc
 file(COPY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/catch.hpp" DESTINATION "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/catch2")
 
 # Softfloat
+find_package(Threads REQUIRED)
 find_package(softfloat CONFIG REQUIRED) 
