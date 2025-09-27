@@ -4,7 +4,7 @@
 
 #include <cstdint>
 
-#include <softfloat.hpp>
+#include <softfloat/softfloat.hpp>
 
 namespace sysio { namespace vm {
 inline constexpr uint32_t inv_float_eps = 0x4B000000;

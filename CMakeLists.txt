@@ -24,9 +24,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_CXX_FLAGS "-fdiagnostics-color=always")
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 
-
-
-
 # ##################################################################################################
 # Gate against Windows builds.
 # ##################################################################################################
@@ -39,19 +36,27 @@ endif()
 # ##################################################################################################
 include(CMakeDependentOption)
 option(
-   FULL_DEBUG_BUILD 
-   "enables stack dumping and instruction tracing" 
+   ENABLE_SOFTFLOAT
+   "enable the backend to use deterministic software floating point operations"
+   ON
+)
+option(ENABLE_SOFTFLOAT_INSTALL "enable softfloat install" ON)
+option(
+   FULL_DEBUG_BUILD
+   "enables stack dumping and instruction tracing"
    $<IF:$<CONFIG:Debug>,ON,OFF>
 )
 option(ENABLE_INSTALL "enable this library to be installed" ON)
 option(ENABLE_MEMORY_OPS_ALIGNMENT "enable the backend to obey alignment hints" OFF)
 option(ENABLE_TOOLS "enable building of tools" ON)
 option(ENABLE_TESTS "enable building of unit tests, spec tests" OFF)
+
 cmake_dependent_option(ENABLE_SPEC_TESTS "enable wasm spec tests" ON "ENABLE_TESTS" ON)
 cmake_dependent_option(ENABLE_FUZZ_TESTS "enable fuzz testing" OFF "ENABLE_TESTS" ON)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(dependencies NO_POLICY_SCOPE)
+include(target_helpers NO_POLICY_SCOPE)
 include(SysVMBuildUtils NO_POLICY_SCOPE)
 
 # ##################################################################################################
@@ -59,20 +64,15 @@ include(SysVMBuildUtils NO_POLICY_SCOPE)
 # ##################################################################################################
 add_library(sys-vm INTERFACE)
 
-# SYS_VM: Add softfloat include path, defs & links directly for legacy support
-target_include_directories(
-   sys-vm
-   INTERFACE
-   "${CMAKE_CURRENT_SOURCE_DIR}/include"   
-   "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/softfloat"
-)
-target_compile_definitions(sys-vm INTERFACE -DSYS_VM_SOFTFLOAT)
-target_link_libraries(sys-vm INTERFACE softfloat::softfloat)
+if(ENABLE_SOFTFLOAT)
+   target_compile_definitions(sys-vm INTERFACE -DSYS_VM_SOFTFLOAT)
+   target_link_libraries(sys-vm INTERFACE softfloat::softfloat)
+endif()
 
 # SYS_VM: ignore the C++17 register warning until clean up
 target_compile_options(
-   sys-vm 
-   INTERFACE 
+   sys-vm
+   INTERFACE
    $<$<COMPILE_LANGUAGE:CXX>:-Wno-register>
 )
 
@@ -102,35 +102,47 @@ endif()
 # ##################################################################################################
 if(ENABLE_TESTS)
    include(CTest)
-   
-   add_subdirectory(tests)   
+
+   add_subdirectory(tests)
 endif()
 
 # ##################################################################################################
 # Installation.
 # ##################################################################################################
 if(ENABLE_INSTALL)
-   if(SYSVM_INSTALL_COMPONENT)
-      set(INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS COMPONENT ${SYSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
-      set(INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS COMPONENT ${SYSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
-      set(INSTALL_DIRECTORY_COMPONENT_ARGS COMPONENT ${SYSVM_INSTALL_COMPONENT} EXCLUDE_FROM_ALL)
-   else()
-      set(INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS COMPONENT Libraries)
-      set(INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS COMPONENT Headers)
-   endif()
-
    include(GNUInstallDirs)
    message(STATUS "Installing...")
-   install(TARGETS sys-vm
-      LIBRARY
-      DESTINATION ${CMAKE_INSTALL_LIBDIR}
-      ${INSTALL_LIBRARY_TARGETS_COMPONENT_ARGS}
-      PUBLIC_HEADER
-      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-      ${INSTALL_PUBLIC_HEADER_TARGETS_COMPONENT_ARGS})
+   install(
+      TARGETS sys-vm
+      EXPORT sys-vm-config
+      RUNTIME DESTINATION bin
+      ARCHIVE DESTINATION lib
+      LIBRARY DESTINATION lib
+      PUBLIC_HEADER DESTINATION include
+   )
 
-   install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/sysio
-      DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-      ${INSTALL_DIRECTORY_COMPONENT_ARGS})
+   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/" DESTINATION include)
+
+   install(
+      EXPORT sys-vm-config
+      FILE sys-vm-config.cmake
+      NAMESPACE sys-vm::
+      DESTINATION share/sys-vm
+   )
+
+   # IF SOFTFLOAT IS ENABLED, PASS ALONG THE INSTALL ARTIFACTS
+   if(ENABLE_SOFTFLOAT AND ENABLE_SOFTFLOAT_INSTALL)
+      install(DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/softfloat/" DESTINATION share/softfloat)
+      install(DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/softfloat/" DESTINATION include/softfloat)
+      install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/lib/libsoftfloat.a" DESTINATION lib)
+
+      # INCLUDE DEBUG ARTIFACTS IF THEY EXIST
+      if(IS_DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/include/softfloat")
+         install(DIRECTORY "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/include/softfloat/" DESTINATION debug/include/softfloat)
+      endif()
+      if(EXISTS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib/libsoftfloat.a")
+         install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/debug/lib/libsoftfloat.a" DESTINATION debug/lib)
+      endif()
+   endif()
 endif()
 

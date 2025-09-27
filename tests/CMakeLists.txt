@@ -87,7 +87,8 @@ if(ENABLE_SPEC_TESTS)
    add_spec_test_impl(e_table ${CMAKE_CURRENT_SOURCE_DIR}/spec/extra/table.wast)
 
    add_executable(sys_vm_spec_tests main.cpp ${SPEC_TESTS})
-   target_link_libraries(sys_vm_spec_tests sys-vm softfloat::softfloat Catch2::Catch2WithMain)
+   setup_vm_target(sys_vm_spec_tests)
+   target_link_libraries(sys_vm_spec_tests sys-vm Catch2::Catch2WithMain)
    target_include_directories(
       sys_vm_spec_tests
       PUBLIC
@@ -128,7 +129,7 @@ if(ENABLE_SPEC_TESTS)
 
    # SPEC GENERATOR
    add_executable(spec_test_generator ${CMAKE_CURRENT_SOURCE_DIR}/spec_test_generator/spec_test_generator.cpp)
-
+   setup_vm_target(spec_test_generator)
 endif()
 
 add_executable(unit_tests main.cpp
@@ -165,8 +166,8 @@ add_executable(unit_tests main.cpp
    instantiation_tests.cpp
    backend_tests.cpp
    vector_tests.cpp)
-
-target_link_libraries(unit_tests sys-vm softfloat::softfloat Catch2::Catch2WithMain)
+setup_vm_target(unit_tests)
+target_link_libraries(unit_tests sys-vm Catch2::Catch2WithMain)
 target_compile_definitions(unit_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
 
 # UNIT_TESTS: Discover
