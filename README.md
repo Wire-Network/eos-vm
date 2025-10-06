@@ -77,5 +77,48 @@ Since the design of __SYS-VM__ is component based, with each component being ver
 
 Extensions to Wasm itself can be made by simply defining the new section (aka C++ class field) for the module and the function needed to parse an element of that section.  This will allow for tooling to be constructed at a rapid pace for custom Wasms for a multitude of needs (debugging, profiling, etc.).
 
+## Environment setup
+
+The sys-vm now builds with [vcpkg](https://vcpkg.io).  
+Setup is the same as the vast majority of `vcpkg`
+based apps, either:
+
+Clone recursively `git clone --recursive ...` or
+run `git submodule update --init --recursive` after cloning.
+
+Then run `./vcpkg/bootstrap-vcpkg.sh` from the repo `<root>`.
+
+You are now ready to configure & build; an example:
+
+```shell
+
+# Configure
+# 1. Replace <prefix> with the same prefix you are using for other
+#    built targets, or simply remove it if unneeded.
+# 2. `gcc-10,g++-10` are not required, but for 
+#    compatability, suggested.
+cmake \
+  -S . \
+  -B build/release \
+  -DCMAKE_INSTALL_PREFIX=<prefix> \
+  -DCMAKE_C_COMPILER=gcc-10 \
+  -DCMAKE_CXX_COMPILER=g++-10 \
+  -DCMAKE_TOOLCHAIN_FILE=./vcpkg/scripts/buildsystems/vcpkg.cmake \
+  -DENABLE_TESTS=ON \
+  -DENABLE_SPEC_TESTS=ON \
+  -DENABLE_CCACHE=ON \
+  -DCMAKE_BUILD_TYPE=Release
+
+# Build
+cmake --build build/release -- -j$(nproc)
+
+# Test
+# NOTE: This only works with `ENABLE_SPEC_TESTS=ON`
+cd build/release
+../tests/sys_vm_spec_tests
+
+```
+
+
 ## Using SYS-VM
 [Quick Overview](./docs/OVERVIEW.md)
