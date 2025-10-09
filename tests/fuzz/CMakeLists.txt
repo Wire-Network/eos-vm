@@ -1,21 +1,22 @@
 set(CMAKE_CXX_FLAGS "-g -O1 -fsanitize-coverage=trace-pc-guard,indirect-calls,trace-cmp,trace-div,trace-gep -gline-tables-only")
 
-find_package( LLVM REQUIRED CONFIG )
-message( STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}" )
-message( STATUS "Using LLVMConfig.cmake at: ${LLVM_DIR}" )
+find_package(LLVM REQUIRED CONFIG)
+message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+message(STATUS "Using LLVMConfig.cmake at: ${LLVM_DIR}")
 
 function(add_libfuzzer_test name)
- set(multi_arg_options "SOURCES")
- cmake_parse_arguments(
-     "add_libfuzzer_test" "" "" "${multi_arg_options}" ${ARGN})
- if ("${add_libfuzzer_test_SOURCES}" STREQUAL "")
-     message(FATAL_ERROR "Source files must be specified")
- endif()
- add_executable(LLVMFuzzer-${name}
-    ${add_libfuzzer_test_SOURCES}
- )
- target_compile_options(LLVMFuzzer-${name} PUBLIC "-fsanitize=fuzzer,address")
- target_link_libraries(LLVMFuzzer-${name} PUBLIC sys-vm "-fsanitize=fuzzer,address")
+    set(multi_arg_options "SOURCES")
+    cmake_parse_arguments(
+        "add_libfuzzer_test" "" "" "${multi_arg_options}" ${ARGN})
+    if("${add_libfuzzer_test_SOURCES}" STREQUAL "")
+        message(FATAL_ERROR "Source files must be specified")
+    endif()
+    add_executable(LLVMFuzzer-${name}
+        ${add_libfuzzer_test_SOURCES}
+    )
+    setup_vm_target(LLVMFuzzer-${name})
+    target_compile_options(LLVMFuzzer-${name} PUBLIC "-fsanitize=fuzzer,address")
+    target_link_libraries(LLVMFuzzer-${name} PUBLIC sys-vm "-fsanitize=fuzzer,address")
 endfunction()
 
 add_libfuzzer_test(wasm_fuzz_test SOURCES fuzz_driver.cpp)

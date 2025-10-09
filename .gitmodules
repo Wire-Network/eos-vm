@@ -1,6 +1,3 @@
-[submodule "external/Catch2"]
-	path = external/Catch2
-	url = ../Catch2
-[submodule "external/softfloat"]
-	path = external/softfloat
-	url = ../berkeley-softfloat-3
+[submodule "vcpkg"]
+	path = vcpkg
+	url = https://github.com/Microsoft/vcpkg.git

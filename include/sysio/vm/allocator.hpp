@@ -214,9 +214,13 @@ namespace sysio { namespace vm {
 
       blocks_by_size_t::iterator allocate_segment(std::size_t min_size) {
          std::size_t size = std::max(min_size, segment_size);
-         void* base = mmap(nullptr, size, PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         segment s{base, size};
+         // To avoid additional memory mappings being created during permission changes of
+         // from PROT_EXEC to PROT_READ | PROT_WRITE, and back to PROT_EXEC,
+         // set permisions to PROT_READ | PROT_WRITE initially.
+         // The permission will be changed to PROT_EXEC after executible code is copied.
+         void* base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
          SYS_VM_ASSERT(base != MAP_FAILED, wasm_bad_alloc, "failed to allocate jit segment");
+         segment s{base, size};
          _segments.emplace_back(std::move(s));
          bool success = false;
          auto guard_1 = scope_guard{[&] { if(!success) { _segments.pop_back(); } }};
@@ -267,7 +271,6 @@ namespace sysio { namespace vm {
    class growable_allocator {
     public:
       static constexpr size_t max_memory_size = 1024 * 1024 * 1024; // 1GB
-      static constexpr size_t chunk_size      = 128 * 1024;         // 128KB
       template<std::size_t align_amt>
       static constexpr size_t align_offset(size_t offset) { return (offset + align_amt - 1) & ~(align_amt - 1); }
 
@@ -277,22 +280,38 @@ namespace sysio { namespace vm {
          return (offset + pagesize - 1) & ~(pagesize - 1);
       }
 
+      growable_allocator() {}
+
       // size in bytes
-      growable_allocator(size_t size) {
+      explicit growable_allocator(size_t size) {
          SYS_VM_ASSERT(size <= max_memory_size, wasm_bad_alloc, "Too large initial memory size");
-         _base = (char*)mmap(NULL, max_memory_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         SYS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
-         if (size != 0) {
-            size_t chunks_to_alloc = (align_offset<chunk_size>(size) / chunk_size);
-            _size += (chunk_size * chunks_to_alloc);
-            mprotect((char*)_base, _size, PROT_READ | PROT_WRITE);
-         }
+         use_default_memory();
+      }
+
+      void use_default_memory() {
+         SYS_VM_ASSERT(_base == nullptr, wasm_bad_alloc, "default memory already allocated");
+
+         // uses mmap for big memory allocation
+         _base = (char*)mmap(NULL, max_memory_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         SYS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "failed to mmap for default memory.");
          _capacity = max_memory_size;
       }
 
+      // size in bytes
+      void use_fixed_memory(size_t size) {
+         SYS_VM_ASSERT(0 < size && size <= max_memory_size, wasm_bad_alloc, "Too large or 0 fixed memory size");
+         SYS_VM_ASSERT(_base == nullptr, wasm_bad_alloc, "Fixed memory already allocated");
+
+         _base = (char*)mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         SYS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap in use_fixed_memory failed.");
+         _capacity = size;
+      }
+
       ~growable_allocator() {
-         munmap(_base, _capacity);
-         if (is_jit) {
+         if (_base != nullptr) {
+            munmap(_base, _capacity);
+         }
+         if (_is_jit && _code_base) {
             jit_allocator::instance().free(_code_base);
          }
       }
@@ -301,19 +320,19 @@ namespace sysio { namespace vm {
       template <typename T>
       T* alloc(size_t size = 0) {
          static_assert(max_memory_size % alignof(T) == 0, "alignment must divide max_memory_size.");
+         SYS_VM_ASSERT(_capacity % alignof(T) == 0, wasm_bad_alloc, "alignment must divide _capacity.");
          _offset = align_offset<alignof(T)>(_offset);
          // Evaluating the inequality in this form cannot cause integer overflow.
          // Once this assertion passes, the rest of the function is safe.
-         SYS_VM_ASSERT ((max_memory_size - _offset) / sizeof(T) >= size, wasm_bad_alloc, "Allocated too much memory");
+         SYS_VM_ASSERT ((_capacity - _offset) / sizeof(T) >= size, wasm_bad_alloc, "Allocated too much memory");
          size_t aligned = (sizeof(T) * size) + _offset;
-         if (aligned > _size) {
-            size_t chunks_to_alloc = align_offset<chunk_size>(aligned - _size) / chunk_size;
-            mprotect((char*)_base + _size, (chunk_size * chunks_to_alloc), PROT_READ | PROT_WRITE);
-            _size += (chunk_size * chunks_to_alloc);
-         }
+         SYS_VM_ASSERT (aligned <= _capacity, wasm_bad_alloc, "Allocated too much memory after aligned");
 
          T* ptr  = (T*)(_base + _offset);
          _offset = aligned;
+         if (_offset > _largest_offset) {
+            _largest_offset = _offset;
+         }
          return ptr;
       }
 
@@ -334,18 +353,19 @@ namespace sysio { namespace vm {
             int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
             SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
             std::memcpy(executable_code, _code_base, _code_size);
-            is_jit = true;
             _code_base = (char*)executable_code;
+            enable_code(IsJit);
+            _is_jit = true;
             _offset = (char*)code_base - _base;
          }
-         enable_code(IsJit);
       }
 
       // Sets protection on code pages to allow them to be executed.
       void enable_code(bool is_jit) {
          mprotect(_code_base, _code_size, is_jit?PROT_EXEC:(PROT_READ|PROT_WRITE));
       }
-      // Make code pages unexecutable
+      // Make code pages unexecutable so deadline timer can kill an
+      // execution (in both JIT and Interpreter)
       void disable_code() {
          mprotect(_code_base, _code_size, PROT_NONE);
       }
@@ -363,28 +383,48 @@ namespace sysio { namespace vm {
             _offset = ((char*)ptr - _base);
       }
 
+      size_t largest_used_size() {
+         return align_to_page(_largest_offset);
+      }
+
       /*
        * Finalize the memory by unmapping any excess pages, this means that the allocator will no longer grow
        */
       void finalize() {
          if(_capacity != _offset) {
             std::size_t final_size = align_to_page(_offset);
-            SYS_VM_ASSERT(munmap(_base + final_size, _capacity - final_size) == 0, wasm_bad_alloc, "failed to finalize growable_allocator");
-            _capacity = _size = _offset = final_size;
+            if (final_size < _capacity) { // final_size can grow to _capacity after align_to_page.
+                                          // make sure no 0 size passed to munmap
+               SYS_VM_ASSERT(munmap(_base + final_size, _capacity - final_size) == 0, wasm_bad_alloc, "failed to finalize growable_allocator");
+               _capacity = _offset = final_size;
+               if (final_size == 0) {
+                  // _base became invalid after munmap if final_size is 0 so
+                  // set it to nullptr to avoid being used
+                  _base = nullptr;
+               }
+            }
          }
       }
 
       void free() { SYS_VM_ASSERT(false, wasm_bad_alloc, "unimplemented"); }
 
+      void release_base_memory()
+      {
+         if (_base != nullptr) {
+            SYS_VM_ASSERT(munmap(_base, _capacity) == 0, wasm_bad_alloc, "failed to release base memory");
+            _base = nullptr;
+         }
+      }
+
       void reset() { _offset = 0; }
 
-      size_t _offset = 0;
-      size_t _size   = 0;
-      std::size_t _capacity = 0;
-      char*  _base;
-      char*  _code_base = nullptr;
-      size_t _code_size = 0;
-      bool is_jit = false;
+      size_t   _offset                = 0;
+      size_t   _largest_offset        = 0;
+      size_t   _capacity              = 0;
+      char*    _base                  = nullptr;
+      char*    _code_base             = nullptr;
+      size_t   _code_size             = 0;
+      bool     _is_jit                = false;
    };
 
    template <typename T>
