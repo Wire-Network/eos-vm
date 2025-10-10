@@ -2,6 +2,7 @@
 
 #include <sysio/vm/constants.hpp>
 #include <sysio/vm/exceptions.hpp>
+#include <sysio/vm/span.hpp>
 
 #include <cassert>
 #include <cstddef>
@@ -372,6 +373,8 @@ namespace sysio { namespace vm {
 
       const void* get_code_start() const { return _code_base; }
 
+      span<std::byte> get_code_span() const {return {(std::byte*)_code_base, _code_size};}
+
       /* different semantics than free,
        * the memory must be at the end of the most recently allocated block.
        */
@@ -472,10 +475,6 @@ namespace sysio { namespace vm {
          int err = mprotect(raw + (page_size * page), (page_size * size), PROT_NONE);
          SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
       }
-      void free() {
-         std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-         munmap(raw - syspagesize, max_memory + 2*syspagesize);
-      }
       wasm_allocator() {
          std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
          raw  = (char*)mmap(NULL, max_memory + 2*syspagesize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
@@ -484,6 +483,10 @@ namespace sysio { namespace vm {
          SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
          raw += syspagesize;
          page = 0;
+      }
+      ~wasm_allocator() {
+         std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+         munmap(raw - syspagesize, max_memory + 2*syspagesize); // raw is never null after wasm_allocator is constructed
       }
       // Initializes the memory controlled by the allocator.
       //
@@ -524,5 +527,10 @@ namespace sysio { namespace vm {
       inline T* create_pointer(uint32_t offset) { return reinterpret_cast<T*>(raw + offset); }
       inline int32_t get_current_page() const { return page; }
       bool is_in_region(char* p) { return p >= raw && p < raw + max_memory; }
+
+      span<std::byte> get_span() const {
+         const std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+         return {(std::byte*)raw - syspagesize, max_memory + 2*syspagesize};
+      }
    };
 }} // namespace sysio::vm

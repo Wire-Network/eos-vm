@@ -173,7 +173,7 @@ namespace sysio { namespace vm {
             // First pass: finds max size of memory required by parsing.
             {
                // Memory used by this pass is freed when going out of the scope
-               module first_pass_module;
+               vm::module first_pass_module;
                first_pass_module.allocator.use_default_memory();
                parser_t{ first_pass_module.allocator, options }.parse_module2(ptr, sz, first_pass_module, debug);
                first_pass_module.finalize();
@@ -246,79 +246,84 @@ namespace sysio { namespace vm {
       }
 
       template <typename... Args>
-      inline bool call_indirect(host_t* host, uint32_t func_index, Args... args) {
+      inline bool call_indirect(host_t* host, uint32_t func_index, Args&&... args) {
          if constexpr (sys_vm_debug) {
-            ctx->execute_func_table(host, debug_visitor(*ctx), func_index, args...);
+            ctx->execute_func_table(host, debug_visitor(*ctx), func_index, std::forward<Args>(args)...);
          } else {
-            ctx->execute_func_table(host, interpret_visitor(*ctx), func_index, args...);
+            ctx->execute_func_table(host, interpret_visitor(*ctx), func_index, std::forward<Args>(args)...);
          }
          return true;
       }
 
       template <typename... Args>
-      inline bool call(host_t* host, uint32_t func_index, Args... args) {
+      inline bool call(host_t* host, uint32_t func_index, Args&&... args) {
          if constexpr (sys_vm_debug) {
-            ctx->execute(host, debug_visitor(*ctx), func_index, args...);
+            ctx->execute(host, debug_visitor(*ctx), func_index, std::forward<Args>(args)...);
          } else {
-            ctx->execute(host, interpret_visitor(*ctx), func_index, args...);
+            ctx->execute(host, interpret_visitor(*ctx), func_index, std::forward<Args>(args)...);
          }
          return true;
       }
 
       template <typename... Args>
-      inline bool call(host_t& host, const std::string_view& mod, const std::string_view& func, Args... args) {
+      inline bool call(host_t& host, const std::string_view& mod, const std::string_view& func, Args&&... args) {
          if constexpr (sys_vm_debug) {
-            ctx->execute(&host, debug_visitor(*ctx), func, args...);
+            ctx->execute(&host, debug_visitor(*ctx), func, std::forward<Args>(args)...);
          } else {
-            ctx->execute(&host, interpret_visitor(*ctx), func, args...);
+            ctx->execute(&host, interpret_visitor(*ctx), func, std::forward<Args>(args)...);
          }
          return true;
       }
 
       template <typename... Args>
-      inline bool call(const std::string_view& mod, const std::string_view& func, Args... args) {
+      inline bool call(const std::string_view& mod, const std::string_view& func, Args&&... args) {
          if constexpr (sys_vm_debug) {
-            ctx->execute(nullptr, debug_visitor(*ctx), func, args...);
+            ctx->execute(nullptr, debug_visitor(*ctx), func, std::forward<Args>(args)...);
          } else {
-            ctx->execute(nullptr, interpret_visitor(*ctx), func, args...);
+            ctx->execute(nullptr, interpret_visitor(*ctx), func, std::forward<Args>(args)...);
          }
          return true;
       }
 
       template <typename... Args>
-      inline auto call_with_return(host_t& host, const std::string_view& mod, const std::string_view& func, Args... args ) {
+      inline auto call_with_return(host_t& host, const std::string_view& mod, const std::string_view& func, Args&&... args ) {
          if constexpr (sys_vm_debug) {
-            return ctx->execute(&host, debug_visitor(*ctx), func, args...);
+            return ctx->execute(&host, debug_visitor(*ctx), func, std::forward<Args>(args)...);
          } else {
-            return ctx->execute(&host, interpret_visitor(*ctx), func, args...);
+            return ctx->execute(&host, interpret_visitor(*ctx), func, std::forward<Args>(args)...);
          }
       }
 
       template <typename... Args>
-      inline auto call_with_return(const std::string_view& mod, const std::string_view& func, Args... args) {
+      inline auto call_with_return(const std::string_view& mod, const std::string_view& func, Args&&... args) {
          if constexpr (sys_vm_debug) {
-            return ctx->execute(nullptr, debug_visitor(*ctx), func, args...);
+            return ctx->execute(nullptr, debug_visitor(*ctx), func, std::forward<Args>(args)...);
          } else {
-            return ctx->execute(nullptr, interpret_visitor(*ctx), func, args...);
+            return ctx->execute(nullptr, interpret_visitor(*ctx), func, std::forward<Args>(args)...);
          }
       }
 
       template<typename Watchdog, typename F>
-      inline void timed_run(Watchdog&& wd, F&& f) {
-         std::atomic<bool>       _timed_out = false;
+      inline auto timed_run(Watchdog&& wd, F&& f) {
+         //timed_run_has_timed_out -- declared in signal handling code because signal handler needs to inspect it on a SEGV too -- is a thread local
+         // so that upon a SEGV the signal handling code can discern if the thread that caused the SEGV has a timed_run that has timed out. This
+         // thread local also need to be an atomic because the thread that a Watchdog callback will be called from may not be the same as the
+         // executing thread.
+         std::atomic<bool>&      _timed_out = timed_run_has_timed_out;
          auto reenable_code = scope_guard{[&](){
-            if (_timed_out) {
+            if (_timed_out.load(std::memory_order_acquire)) {
                mod->allocator.enable_code(Impl::is_jit);
+               _timed_out.store(false, std::memory_order_release);
             }
          }};
          try {
-            auto wd_guard = wd.scoped_run([this,&_timed_out]() {
-               _timed_out = true;
+            auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this,&_timed_out]() {
+               _timed_out.store(true, std::memory_order_release);
                mod->allocator.disable_code();
             });
-            static_cast<F&&>(f)();
+            return std::forward<F>(f)();
          } catch(wasm_memory_exception&) {
-            if (_timed_out) {
+            if (_timed_out.load(std::memory_order_acquire)) {
                throw timeout_exception{ "execution timed out" };
             } else {
                throw;
@@ -328,7 +333,7 @@ namespace sysio { namespace vm {
 
       template <typename Watchdog>
       inline void execute_all(Watchdog&& wd, host_t& host) {
-         timed_run(static_cast<Watchdog&&>(wd), [&]() {
+         timed_run(std::forward<Watchdog>(wd), [&]() {
             for (int i = 0; i < mod->exports.size(); i++) {
                if (mod->exports[i].kind == external_kind::Function) {
                   std::string s{ (const char*)mod->exports[i].field_str.raw(), mod->exports[i].field_str.size() };
@@ -340,7 +345,7 @@ namespace sysio { namespace vm {
 
       template <typename Watchdog>
       inline void execute_all(Watchdog&& wd) {
-         timed_run(static_cast<Watchdog&&>(wd), [&]() {
+         timed_run(std::forward<Watchdog>(wd), [&]() {
             for (int i = 0; i < mod->exports.size(); i++) {
                if (mod->exports[i].kind == external_kind::Function) {
                   std::string s{ (const char*)mod->exports[i].field_str.raw(), mod->exports[i].field_str.size() };

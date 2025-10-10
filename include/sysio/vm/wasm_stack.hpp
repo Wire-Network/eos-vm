@@ -34,7 +34,7 @@ namespace sysio { namespace vm {
             if (_index >= _store.size())
                _store.resize(_store.size()*2);
          }
-         _store[_index++] = std::forward<ElemT>(e);
+         _store[_index++] = std::move(e);
       }
 
       ElemT pop() { return _store[--_index]; }
