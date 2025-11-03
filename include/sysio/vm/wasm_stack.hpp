@@ -34,7 +34,7 @@ namespace sysio { namespace vm {
             if (_index >= _store.size())
                _store.resize(_store.size()*2);
          }
-         _store[_index++] = std::forward<ElemT>(e);
+         _store[_index++] = std::move(e);
       }
 
       ElemT pop() { return _store[--_index]; }
@@ -62,6 +62,17 @@ namespace sysio { namespace vm {
       void         trim(size_t amt) { _index -= amt; }
       size_t       size() const { return _index; }
       size_t       capacity() const { return _store.size(); }
+
+      // This is only applicable when underlying allocator is unmanaged_vector,
+      // which is std::vector
+      void         reset_capacity() {
+         if constexpr (std::is_same_v<Allocator, nullptr_t>) {
+            if (_store.capacity() > constants::initial_stack_size) {
+               _store.resize(constants::initial_stack_size);
+               _store.shrink_to_fit();
+            }
+         }
+      }
 
     private:
       using base_data_store_t = std::conditional_t<std::is_same_v<Allocator, std::nullptr_t>, unmanaged_vector<ElemT>, managed_vector<ElemT, Allocator>>;

@@ -238,9 +238,9 @@ namespace sysio { namespace vm {
       template <typename Type_Converter, typename T>
       constexpr auto resolve_result(Type_Converter& tc, T&& val) {
          if constexpr (has_to_wasm_v<T, Type_Converter>) {
-            return tc.as_result(tc.to_wasm(static_cast<T&&>(val)));
+            return tc.as_result(tc.to_wasm(std::forward<T>(val)));
          } else {
-            return tc.as_result(static_cast<T&&>(val));
+            return tc.as_result(std::forward<T>(val));
          }
       }
 
@@ -281,7 +281,7 @@ namespace sysio { namespace vm {
 
    template <bool Once, typename T, typename F, typename... Args>
    void invoke_on(F&& func, const Args&... args) {
-      detail::invoke_on_impl<Once, 0, T>(static_cast<F&&>(func), args...);
+      detail::invoke_on_impl<Once, 0, T>(std::forward<F>(func), args...);
    }
 
 #define SYS_VM_INVOKE_ON(TYPE, CONDITION) \
@@ -304,15 +304,15 @@ namespace sysio { namespace vm {
    template <auto F, typename Preconditions, typename Type_Converter, typename Host, typename... Args>
    decltype(auto) invoke_impl(Type_Converter& tc, Host* host, Args&&... args) {
       if constexpr (std::is_same_v<Host, standalone_function_t>)
-         return std::invoke(F, static_cast<Args&&>(args)...);
+         return std::invoke(F, std::forward<Args>(args)...);
       else
-         return std::invoke(F, host, static_cast<Args&&>(args)...);
+         return std::invoke(F, host, std::forward<Args>(args)...);
    }
 
    template <auto F, typename Preconditions, typename Host, typename Args, typename Type_Converter, std::size_t... Is>
    decltype(auto) invoke_with_host_impl(Type_Converter& tc, Host* host, Args&& args, std::index_sequence<Is...>) {
       detail::preconditions_runner<0, Preconditions>(tc, args);
-      return invoke_impl<F, Preconditions>(tc, host, std::get<Is>(static_cast<Args&&>(args))...);
+      return invoke_impl<F, Preconditions>(tc, host, std::get<Is>(std::forward<Args>(args))...);
    }
 
    template <auto F, typename Preconditions, typename Args, typename Type_Converter, typename Host, std::size_t... Is>
@@ -325,7 +325,7 @@ namespace sysio { namespace vm {
    void maybe_push_result(Type_Converter& tc, T&& res, std::size_t trim_amt) {
       if constexpr (!std::is_same_v<std::decay_t<T>, maybe_void_t>) {
          tc.get_interface().trim_operands(trim_amt);
-         tc.get_interface().push_operand(detail::resolve_result(tc, static_cast<T&&>(res)));
+         tc.get_interface().push_operand(detail::resolve_result(tc, std::forward<T>(res)));
       } else {
          tc.get_interface().trim_operands(trim_amt);
       }
@@ -361,14 +361,12 @@ namespace sysio { namespace vm {
       std::vector<value_type> ret;
    };
 
-   inline bool operator==(const host_function& lhs, const func_type& rhs) {
+   template<typename Func_type>
+   inline bool operator==(const host_function& lhs, const Func_type& rhs) {
       return lhs.params.size() == rhs.param_types.size() &&
-         std::equal(lhs.params.begin(), lhs.params.end(), rhs.param_types.raw()) &&
+         std::equal(lhs.params.begin(), lhs.params.end(), rhs.param_types.data()) &&
          lhs.ret.size() == rhs.return_count &&
          (lhs.ret.size() == 0 || lhs.ret[0] == rhs.return_type);
-   }
-   inline bool operator==(const func_type& lhs, const host_function& rhs) {
-      return rhs == lhs;
    }
 
    template<typename TC, typename Args, std::size_t... Is>
@@ -452,20 +450,27 @@ namespace sysio { namespace vm {
          mappings::get().template add_mapping<Func, res, args, preconditions>(mod, name);
       }
 
+      static void resolve(module& mod) {
+         if (mod.jit_mod != nullptr) {
+            resolve_impl(*mod.jit_mod);
+         } else {
+            resolve_impl(mod);
+         }
+      }
+
       template <typename Module>
-      static void resolve(Module& mod) {
+      static void resolve_impl(Module& mod) {
          auto& imports          = mod.import_functions;
          auto& current_mappings = mappings::get();
          for (std::size_t i = 0; i < mod.imports.size(); i++) {
             std::string mod_name =
-                  std::string((char*)mod.imports[i].module_str.raw(), mod.imports[i].module_str.size());
-            std::string fn_name = std::string((char*)mod.imports[i].field_str.raw(), mod.imports[i].field_str.size());
+                  std::string((char*)mod.imports[i].module_str.data(), mod.imports[i].module_str.size());
+            std::string fn_name = std::string((char*)mod.imports[i].field_str.data(), mod.imports[i].field_str.size());
             SYS_VM_ASSERT(current_mappings.named_mapping.count({ mod_name, fn_name }), wasm_link_exception,
                           std::string("no mapping for imported function ") + fn_name);
             imports[i] = current_mappings.named_mapping[{ mod_name, fn_name }];
-            const import_entry& entry = mod.imports[i];
-            SYS_VM_ASSERT(entry.kind == Function, wasm_link_exception, std::string("importing non-function ") + fn_name);
-            SYS_VM_ASSERT(current_mappings.host_functions[imports[i]] == mod.types[entry.type.func_t], wasm_link_exception, std::string("wrong type for imported function ") + fn_name);
+            SYS_VM_ASSERT(mod.imports[i].kind == Function, wasm_link_exception, std::string("importing non-function ") + fn_name);
+            SYS_VM_ASSERT(current_mappings.host_functions[imports[i]] == mod.types[mod.imports[i].type.func_t], wasm_link_exception, std::string("wrong type for imported function ") + fn_name);
          }
       }
 

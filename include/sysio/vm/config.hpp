@@ -17,15 +17,15 @@ namespace sysio { namespace vm {
 #endif
 
 #ifdef SYS_VM_FULL_DEBUG
-   inline constexpr bool eos_vm_debug = true;
+   inline constexpr bool sys_vm_debug = true;
 #else
-   inline constexpr bool eos_vm_debug = false;
+   inline constexpr bool sys_vm_debug = false;
 #endif
 
 #ifdef __x86_64__
-   inline constexpr bool eos_vm_amd64 = true;
+   inline constexpr bool sys_vm_amd64 = true;
 #else
-   inline constexpr bool eos_vm_amd64 = false;
+   inline constexpr bool sys_vm_amd64 = false;
 #endif
 
 }} // namespace sysio::vm

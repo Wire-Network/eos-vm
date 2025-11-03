@@ -1,0 +1,13 @@
+{
+  "name": "wire-sys-vm",
+  "version": "5.2.0-rc1",
+  "dependencies": [
+    {
+      "name": "catch2",
+      "features": [
+        "no-posix-signals"
+      ]
+    },
+    "softfloat"
+  ]
+}

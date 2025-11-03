@@ -463,7 +463,6 @@ namespace sysio { namespace vm {
          if(gv.type.mutability)
             on_mutable_global(ct);
          parse_init_expr(code, gv.init, ct);
-         gv.current = gv.init;
       }
 
       void parse_memory_type(wasm_code_ptr& code, memory_type& mt) {
@@ -1314,7 +1313,12 @@ namespace sysio { namespace vm {
          parse_section_impl(code, elems, detail::get_max_function_section_elements(_options),
                             [&](wasm_code_ptr& code, function_body& fb, std::size_t idx) { parse_function_body(code, fb, idx); });
          SYS_VM_ASSERT( elems.size() == _mod->functions.size(), wasm_parse_exception, "code section must have the same size as the function section" );
-         Writer code_writer(_allocator, code.bounds() - code.offset(), *_mod);
+
+         write_code_out(_allocator, code, code_start);
+      }
+
+      void write_code_out(growable_allocator& allocator, wasm_code_ptr& code, const void* code_start) {
+         Writer code_writer(allocator, code.bounds() - code.offset(), *_mod);
          imap.on_code_start(code_writer.get_base_addr(), code_start);
          for (size_t i = 0; i < _function_bodies.size(); i++) {
             function_body& fb = _mod->code[i];
@@ -1328,6 +1332,7 @@ namespace sysio { namespace vm {
          }
          imap.on_code_end(code_writer.get_addr(), code.raw());
       }
+
       template <uint8_t id>
       inline void parse_section(wasm_code_ptr&                                                                code,
                                 vec<typename std::enable_if_t<id == section_id::data_section, data_segment>>& elems) {
