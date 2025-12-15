@@ -4,6 +4,7 @@
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/span.hpp>
 
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -361,6 +362,7 @@ namespace sysio { namespace vm {
          }
       }
 
+   private:
       // Sets protection on code pages to allow them to be executed.
       void enable_code(bool is_jit) {
          mprotect(_code_base, _code_size, is_jit?PROT_EXEC:(PROT_READ|PROT_WRITE));
@@ -369,6 +371,17 @@ namespace sysio { namespace vm {
       // execution (in both JIT and Interpreter)
       void disable_code() {
          mprotect(_code_base, _code_size, PROT_NONE);
+      }
+
+   public:
+      void timed_run_enable_code(bool is_jit) {
+         if (--_disable_code_in_progress == 0) {
+            enable_code(is_jit);
+         }
+      }
+      void timed_run_disable_code() {
+         disable_code();
+         ++_disable_code_in_progress;
       }
 
       const void* get_code_start() const { return _code_base; }
@@ -421,6 +434,7 @@ namespace sysio { namespace vm {
 
       void reset() { _offset = 0; }
 
+   private:
       size_t   _offset                = 0;
       size_t   _largest_offset        = 0;
       size_t   _capacity              = 0;
@@ -428,6 +442,7 @@ namespace sysio { namespace vm {
       char*    _code_base             = nullptr;
       size_t   _code_size             = 0;
       bool     _is_jit                = false;
+      std::atomic<uint32_t> _disable_code_in_progress = 0;
    };
 
    template <typename T>
