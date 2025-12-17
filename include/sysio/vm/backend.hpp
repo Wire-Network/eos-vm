@@ -304,7 +304,7 @@ namespace sysio { namespace vm {
       }
 
       template<typename Watchdog, typename F>
-      inline auto timed_run(Watchdog&& wd, F&& f) {
+      inline void timed_run(Watchdog&& wd, F&& f) {
          //timed_run_has_timed_out -- declared in signal handling code because signal handler needs to inspect it on a SEGV too -- is a thread local
          // so that upon a SEGV the signal handling code can discern if the thread that caused the SEGV has a timed_run that has timed out. This
          // thread local also need to be an atomic because the thread that a Watchdog callback will be called from may not be the same as the
@@ -312,19 +312,20 @@ namespace sysio { namespace vm {
          // calling _timed_out.store()/load(); this is by design. _mod is also thread local because backend is thread local, it is captured
          // explicitly to make it clear it is the calling thread's mod and not the signaled thread's mod.
          std::atomic<bool>&      _timed_out = timed_run_has_timed_out;
-         auto& _mod = mod;
-         auto reenable_code = scope_guard{[&_timed_out,&_mod]() {
+         auto& _mod = *mod;
+         auto reenable_code = scope_guard{[&_timed_out,&_mod](){
             if (_timed_out.load(std::memory_order_acquire)) {
-               _mod->allocator.timed_run_enable_code(Impl::is_jit);
                _timed_out.store(false, std::memory_order_release);
+               _mod.allocator.timed_run_enable_code(Impl::is_jit);
             }
          }};
          try {
+            _mod.allocator.timed_run_pause_until_ready();
             auto wd_guard = std::forward<Watchdog>(wd).scoped_run([&_timed_out,&_mod]() {
                _timed_out.store(true, std::memory_order_release);
-               _mod->allocator.timed_run_disable_code();
+               _mod.allocator.timed_run_disable_code();
             });
-            return std::forward<F>(f)();
+            std::forward<F>(f)();
          } catch(wasm_memory_exception&) {
             if (_timed_out.load(std::memory_order_acquire)) {
                throw timeout_exception{ "execution timed out" };

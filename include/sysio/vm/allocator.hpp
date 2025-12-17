@@ -10,9 +10,10 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
-#include <set>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -20,6 +21,10 @@
 #include <unistd.h>
 
 namespace sysio { namespace vm {
+
+   __attribute__((visibility("default")))
+   inline static std::atomic<bool> timed_run_signal_storm{false};
+
    class bounded_allocator {
     public:
       bounded_allocator(size_t size) {
@@ -367,21 +372,36 @@ namespace sysio { namespace vm {
       void enable_code(bool is_jit) {
          mprotect(_code_base, _code_size, is_jit?PROT_EXEC:(PROT_READ|PROT_WRITE));
       }
+
       // Make code pages unexecutable so deadline timer can kill an
       // execution (in both JIT and Interpreter)
       void disable_code() {
          mprotect(_code_base, _code_size, PROT_NONE);
       }
-
    public:
+
+      // Sets protection on code pages to allow them to be executed.
       void timed_run_enable_code(bool is_jit) {
-         if (--_disable_code_in_progress == 0) {
+         if (--_mprotects_in_progress == 0) {
             enable_code(is_jit);
+            timed_run_signal_storm.store(false, std::memory_order_release);
          }
       }
+
+      // Make code pages unexecutable so deadline timer can kill an
+      // execution (in both JIT and Interpreter)
       void timed_run_disable_code() {
-         disable_code();
-         ++_disable_code_in_progress;
+         if (_mprotects_in_progress++ == 0) {
+            timed_run_signal_storm.store(true, std::memory_order_release);
+            disable_code();
+         }
+      }
+
+      // do not call from signal handler calls as yield() is not signal safe
+      void timed_run_pause_until_ready() {
+         while (timed_run_signal_storm.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+         }
       }
 
       const void* get_code_start() const { return _code_base; }
@@ -434,7 +454,6 @@ namespace sysio { namespace vm {
 
       void reset() { _offset = 0; }
 
-   private:
       size_t   _offset                = 0;
       size_t   _largest_offset        = 0;
       size_t   _capacity              = 0;
@@ -442,7 +461,7 @@ namespace sysio { namespace vm {
       char*    _code_base             = nullptr;
       size_t   _code_size             = 0;
       bool     _is_jit                = false;
-      std::atomic<uint32_t> _disable_code_in_progress = 0;
+      std::atomic<uint32_t> _mprotects_in_progress{0};
    };
 
    template <typename T>

@@ -53,8 +53,25 @@ namespace sysio { namespace vm {
             // timer. Return and retry executing the same code again. Eventually timed_run() on the other thread will reset the page
             // permissions and progress on this thread can continue
             //on linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
-            if ((sig == SIGSEGV || sig == SIGBUS) && timed_run_has_timed_out.load(std::memory_order_acquire) == false)
+            if ((sig == SIGSEGV || sig == SIGBUS) && timed_run_has_timed_out.load(std::memory_order_acquire) == false) {
+               // Wait for storm to be over before continuing
+               // This thread can be signaled again as the thread to timeout. Without the timed_run_has_timed_out check
+               // this can be in a state where it was signaled but can't process the signal because waiting on timed_run_signal_storm.
+               while (timed_run_signal_storm.load(std::memory_order_acquire) && !timed_run_has_timed_out.load(std::memory_order_acquire)) {
+                  // Portably tell the CPU we are in a spin loop
+                  #if defined(__i386__) || defined(__x86_64__)
+                  __builtin_ia32_pause();
+                  #elif defined(__arm__) || defined(__aarch64__)
+                  asm volatile("yield" ::: "memory");
+                  #endif
+               }
+               // might have been signaled after check, if so then jump out
+               if (timed_run_has_timed_out.load(std::memory_order_acquire))
+                  siglongjmp(*dest, sig);
+
                return;
+            }
+
             //otherwise, jump out
             siglongjmp(*dest, sig);
          }
