@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 #include <memory>
+#include <atomic>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -428,6 +429,7 @@ namespace sysio { namespace vm {
       char*    _code_base             = nullptr;
       size_t   _code_size             = 0;
       bool     _is_jit                = false;
+      std::atomic<uint32_t> timed_run_in_progress{0};
    };
 
    template <typename T>

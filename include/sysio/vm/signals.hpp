@@ -24,7 +24,7 @@ namespace sysio { namespace vm {
    inline thread_local std::span<std::byte> memory_range;
 
    __attribute__((visibility("default")))
-   inline thread_local std::atomic<bool> timed_run_has_timed_out{false};
+   inline std::atomic<bool> timed_run_has_timed_out{false};
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
@@ -48,6 +48,10 @@ namespace sysio { namespace vm {
             siglongjmp(*dest, sig);
 
          //a failure in the code range...
+         //a failure should always be in the code_memory_range when dest set in a timed_run.
+         //timed_run_has_timed_out is static and therefore applies to all threads. See backend timed_run for details.
+         // SEGV/BUS because the code_memory_range was set to PROT_NONE.
+         // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
          if (addr >= code_memory_range.data() && addr < code_memory_range.data() + code_memory_range.size()) {
             //a SEGV/BUS in the code range when timed_run_has_timed_out=false is due to a _different_ thread's execution activating a deadline
             // timer. Return and retry executing the same code again. Eventually timed_run() on the other thread will reset the page

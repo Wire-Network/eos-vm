@@ -305,25 +305,32 @@ namespace sysio { namespace vm {
 
       template<typename Watchdog, typename F>
       inline auto timed_run(Watchdog&& wd, F&& f) {
-         //timed_run_has_timed_out -- declared in signal handling code because signal handler needs to inspect it on a SEGV too -- is a thread local
-         // so that upon a SEGV the signal handling code can discern if the thread that caused the SEGV has a timed_run that has timed out. This
-         // thread local also need to be an atomic because the thread that a Watchdog callback will be called from may not be the same as the
-         // executing thread.
-         std::atomic<bool>&      _timed_out = timed_run_has_timed_out;
-         auto reenable_code = scope_guard{[&](){
-            if (_timed_out.load(std::memory_order_acquire)) {
-               mod->allocator.enable_code(Impl::is_jit);
-               _timed_out.store(false, std::memory_order_release);
+         // timed_run_has_timed_out -- declared in signal handling code because signal handler needs to inspect it on a SEGV too.
+         // It is static because all running threads share the same timeout window. Either it is a normal transaction
+         // executing on the main thread or it is a read-only transaction. All read-only transactions are limited by
+         // the same timeout so for our use case it is fine to always kill all executing transactions on a timeout.
+         // The previous timed_run_has_timed_out thread local was problematic because the timeout calling the wd_guard
+         // callback could be from any thread which would trigger the wrong timed_run_has_timed_out leaving a thread
+         // executing.
+         auto reenable_code = scope_guard{[this](){
+            if (mod->allocator.timed_run_in_progress == 0) { // last one out turns back on execution
+               if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
+                  mod->allocator.enable_code(Impl::is_jit);
+                  timed_run_has_timed_out.store(false, std::memory_order_release);
+               }
             }
          }};
          try {
-            auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this,&_timed_out]() {
-               _timed_out.store(true, std::memory_order_release);
+            ++mod->allocator.timed_run_in_progress;
+            auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this]() {
+               timed_run_has_timed_out.store(true, std::memory_order_release);
                mod->allocator.disable_code();
             });
             return std::forward<F>(f)();
+            --mod->allocator.timed_run_in_progress;
          } catch(wasm_memory_exception&) {
-            if (_timed_out.load(std::memory_order_acquire)) {
+            --mod->allocator.timed_run_in_progress;
+            if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
                throw timeout_exception{ "execution timed out" };
             } else {
                throw;
