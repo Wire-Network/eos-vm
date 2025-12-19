@@ -304,7 +304,7 @@ namespace sysio { namespace vm {
       }
 
       template<typename Watchdog, typename F>
-      inline auto timed_run(Watchdog&& wd, F&& f) {
+      inline void timed_run(Watchdog&& wd, F&& f) {
          // timed_run_has_timed_out -- declared in signal handling code because signal handler needs to inspect it on a SEGV too.
          // It is static because all running threads share the same timeout window. Either it is a normal transaction
          // executing on the main thread or it is a read-only transaction. All read-only transactions are limited by
@@ -326,7 +326,7 @@ namespace sysio { namespace vm {
                timed_run_has_timed_out.store(true, std::memory_order_release);
                mod->allocator.disable_code();
             });
-            return std::forward<F>(f)();
+            std::forward<F>(f)();
             --mod->allocator.timed_run_in_progress;
          } catch(wasm_memory_exception&) {
             --mod->allocator.timed_run_in_progress;
