@@ -24,6 +24,9 @@
 
 namespace sysio { namespace vm {
 
+   __attribute__((visibility("default")))
+   inline std::atomic<uint32_t> total_timed_run_in_progress{false};
+
 #ifdef __x86_64__
    struct jit {
       template<typename Host>
@@ -313,28 +316,37 @@ namespace sysio { namespace vm {
          // callback could be from any thread which would trigger the wrong timed_run_has_timed_out leaving a thread
          // executing.
          auto reenable_code = scope_guard{[this](){
-            if (mod->allocator.timed_run_in_progress == 0) { // last one out turns back on execution
-               if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
-                  mod->allocator.enable_code(Impl::is_jit);
+            if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
+               if (total_timed_run_in_progress == 0) {
                   timed_run_has_timed_out.store(false, std::memory_order_release);
+               }
+               if (mod->allocator.timed_run_in_progress == 0) {
+                  mod->allocator.enable_code(Impl::is_jit);
                }
             }
          }};
          try {
+            ++total_timed_run_in_progress;
             ++mod->allocator.timed_run_in_progress;
             auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this]() {
                timed_run_has_timed_out.store(true, std::memory_order_release);
                mod->allocator.disable_code();
             });
             std::forward<F>(f)();
+            --total_timed_run_in_progress;
             --mod->allocator.timed_run_in_progress;
          } catch(wasm_memory_exception&) {
+            --total_timed_run_in_progress;
             --mod->allocator.timed_run_in_progress;
             if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
                throw timeout_exception{ "execution timed out" };
             } else {
                throw;
             }
+         } catch(...) {
+            --total_timed_run_in_progress;
+            --mod->allocator.timed_run_in_progress;
+            throw;
          }
       }
 
