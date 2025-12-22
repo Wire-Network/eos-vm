@@ -316,6 +316,8 @@ namespace sysio { namespace vm {
          // callback could be from any thread which would trigger the wrong timed_run_has_timed_out leaving a thread
          // executing.
          auto reenable_code = scope_guard{[this](){
+            --total_timed_run_in_progress;
+            --mod->allocator.timed_run_in_progress;
             if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
                if (total_timed_run_in_progress == 0) {
                   timed_run_has_timed_out.store(false, std::memory_order_release);
@@ -333,20 +335,12 @@ namespace sysio { namespace vm {
                mod->allocator.disable_code();
             });
             std::forward<F>(f)();
-            --total_timed_run_in_progress;
-            --mod->allocator.timed_run_in_progress;
          } catch(wasm_memory_exception&) {
-            --total_timed_run_in_progress;
-            --mod->allocator.timed_run_in_progress;
             if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
                throw timeout_exception{ "execution timed out" };
             } else {
                throw;
             }
-         } catch(...) {
-            --total_timed_run_in_progress;
-            --mod->allocator.timed_run_in_progress;
-            throw;
          }
       }
 
