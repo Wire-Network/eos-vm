@@ -2,12 +2,27 @@
   "name": "wire-sys-vm",
   "version": "5.2.0-rc1",
   "dependencies": [
+    "softfloat",
     {
       "name": "catch2",
       "features": [
         "no-posix-signals"
       ]
     },
-    "softfloat"
+    {
+      "name": "llvm",
+      "default-features": true,
+      "features": [
+        "enable-rtti",
+        "target-aarch64",
+        "target-x86"
+      ]
+    }
+  ],
+  "overrides": [
+    {
+      "name": "llvm",
+      "version": "18.1.6#5"
+    }
   ]
 }
