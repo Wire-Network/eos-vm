@@ -3,6 +3,7 @@
 # build sys-vm or integrate with another system with CMake.
 # ##################################################################################################
 cmake_minimum_required(VERSION 3.12)
+
 set(VERSION_MAJOR 1)
 set(VERSION_MINOR 1)
 set(VERSION_PATCH 0)
@@ -145,4 +146,3 @@ if(ENABLE_INSTALL)
       endif()
    endif()
 endif()
-

@@ -53,10 +53,10 @@ BACKEND_TEST_CASE("test reentry", "[reentry]") {
    struct test_runner {
       backend_t* bkend;
       uint32_t test_func_0(uint32_t val) {
-         return bkend->call_with_return(*this, "env", "bar", val)->to_ui32() + 50;
+         return bkend->call_with_return(*this, "env", "bar", static_cast<uint32_t>(val))->to_ui32() + 50;
       }
       uint32_t test_func_1(uint32_t val) {
-         return bkend->call_with_return(*this, "env", "testbar", val)->to_ui32() + 50;
+         return bkend->call_with_return(*this, "env", "testbar", static_cast<uint32_t>(val))->to_ui32() + 50;
       }
    };
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sysio/vm/allocator.hpp>
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/span.hpp>
 #include <sysio/vm/utils.hpp>
@@ -156,7 +157,7 @@ namespace sysio { namespace vm {
       sigjmp_buf dest;
       sigjmp_buf* volatile old_signal_handler = nullptr;
       code_memory_range = code_allocator.get_code_span();
-      memory_range = mem_allocator->get_span();
+      memory_range = mem_allocator ? mem_allocator->get_span() : std::span<std::byte>{};
       int sig;
       if((sig = sigsetjmp(dest, 1)) == 0) {
          // Note: Cannot use RAII, as non-trivial destructors w/ longjmp

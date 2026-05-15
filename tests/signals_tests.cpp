@@ -10,12 +10,16 @@ struct test_exception {};
 
 TEST_CASE("Testing signals", "[invoke_with_signal_handler]") {
    bool okay = false;
+   // These tests call the signal handler directly, outside a real VM execution.
+   // A null memory allocator intentionally leaves memory_range empty so the
+   // handler exercises its legacy catch-all path.
+   sysio::vm::growable_allocator code_allocator;
    try {
       sysio::vm::invoke_with_signal_handler([]() {
          std::raise(SIGSEGV);
       }, [](int sig) {
          throw test_exception{};
-      }, {}, {});
+      }, code_allocator, nullptr);
    } catch(test_exception&) {
       okay = true;
    }
@@ -23,9 +27,11 @@ TEST_CASE("Testing signals", "[invoke_with_signal_handler]") {
 }
 
 TEST_CASE("Testing throw", "[signal_handler_throw]") {
+   // See the signal test above: no wasm memory is involved in this direct path.
+   sysio::vm::growable_allocator code_allocator;
    CHECK_THROWS_AS(sysio::vm::invoke_with_signal_handler([](){
       sysio::vm::throw_<sysio::vm::wasm_exit_exception>( "Exiting" );
-   }, [](int){}, {}, {}), sysio::vm::wasm_exit_exception);
+   }, [](int){}, code_allocator, nullptr), sysio::vm::wasm_exit_exception);
 }
 
 static volatile sig_atomic_t sig_handled;

@@ -3,6 +3,20 @@
 # ############
 
 enable_testing()
+include(FetchContent)
+
+set(CATCH_BUILD_TESTING OFF CACHE BOOL "Disable Catch2 self-tests")
+set(CATCH_INSTALL_DOCS OFF CACHE BOOL "Disable Catch2 documentation install")
+set(CATCH_INSTALL_HELPERS OFF CACHE BOOL "Disable Catch2 helper install")
+
+FetchContent_Declare(
+   Catch2
+   GIT_REPOSITORY https://github.com/catchorg/Catch2.git
+   GIT_TAG 9c741fe96073ed620ffc032afbed1f3c789d2b68
+)
+FetchContent_MakeAvailable(Catch2)
+
+list(APPEND CMAKE_MODULE_PATH "${catch2_SOURCE_DIR}/contrib")
 include(Catch)
 
 # OPTIONS
@@ -88,7 +102,7 @@ if(ENABLE_SPEC_TESTS)
 
    add_executable(sys_vm_spec_tests main.cpp ${SPEC_TESTS})
    setup_vm_target(sys_vm_spec_tests)
-   target_link_libraries(sys_vm_spec_tests sys-vm Catch2::Catch2WithMain)
+   target_link_libraries(sys_vm_spec_tests sys-vm Catch2::Catch2)
    target_include_directories(
       sys_vm_spec_tests
       PUBLIC
@@ -166,9 +180,8 @@ add_executable(unit_tests main.cpp
    backend_tests.cpp
    vector_tests.cpp)
 setup_vm_target(unit_tests)
-target_link_libraries(unit_tests sys-vm Catch2::Catch2WithMain)
+target_link_libraries(unit_tests sys-vm Catch2::Catch2)
 target_compile_definitions(unit_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
 
 # UNIT_TESTS: Discover
 catch_discover_tests(unit_tests)
-
