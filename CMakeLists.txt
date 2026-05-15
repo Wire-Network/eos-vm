@@ -113,23 +113,32 @@ endif()
 if(ENABLE_INSTALL)
    include(GNUInstallDirs)
    message(STATUS "Installing...")
-   install(
-      TARGETS sys-vm
-      EXPORT sys-vm-config
-      RUNTIME DESTINATION bin
-      ARCHIVE DESTINATION lib
-      LIBRARY DESTINATION lib
-      PUBLIC_HEADER DESTINATION include
-   )
+   set(IS_VCPKG_DEBUG_INSTALL OFF)
+   if(DEFINED VCPKG_TARGET_TRIPLET AND CMAKE_INSTALL_PREFIX MATCHES "/debug$")
+      set(IS_VCPKG_DEBUG_INSTALL ON)
+   endif()
 
-   install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/" DESTINATION include)
+   if(IS_VCPKG_DEBUG_INSTALL)
+      install(CODE "message(STATUS \"Skipping sys-vm headers and CMake config for vcpkg debug install\")")
+   else()
+      install(
+         TARGETS sys-vm
+         EXPORT sys-vm-config
+         RUNTIME DESTINATION bin
+         ARCHIVE DESTINATION lib
+         LIBRARY DESTINATION lib
+         PUBLIC_HEADER DESTINATION include
+      )
 
-   install(
-      EXPORT sys-vm-config
-      FILE sys-vm-config.cmake
-      NAMESPACE sys-vm::
-      DESTINATION share/sys-vm
-   )
+      install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/" DESTINATION include)
+
+      install(
+         EXPORT sys-vm-config
+         FILE sys-vm-config.cmake
+         NAMESPACE sys-vm::
+         DESTINATION share/sys-vm
+      )
+   endif()
 
    # IF SOFTFLOAT IS ENABLED, PASS ALONG THE INSTALL ARTIFACTS
    if(ENABLE_SOFTFLOAT AND ENABLE_SOFTFLOAT_INSTALL)
