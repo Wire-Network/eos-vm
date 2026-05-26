@@ -877,47 +877,47 @@ namespace sysio { namespace vm {
       static uint64_t adapt_result(bool val) {
          return val?1:0;
       }
-      static uint64_t adapt_result(float32_t val) {
+      static uint64_t adapt_result(softfloat32_t val) {
          uint64_t result = 0;
-         std::memcpy(&result, &val, sizeof(float32_t));
+         std::memcpy(&result, &val, sizeof(softfloat32_t));
          return result;
       }
-      static float64_t adapt_result(float64_t val) {
+      static softfloat64_t adapt_result(softfloat64_t val) {
          return val;
       }
 
       template<auto F>
-      static auto adapt_f32_unop(float32_t arg) {
+      static auto adapt_f32_unop(softfloat32_t arg) {
         return ::to_softfloat32(static_cast<decltype(F)>(F)(::from_softfloat32(arg)));
       }
       template<auto F>
-      static auto adapt_f32_binop(float32_t lhs, float32_t rhs) {
+      static auto adapt_f32_binop(softfloat32_t lhs, softfloat32_t rhs) {
          return ::to_softfloat32(static_cast<decltype(F)>(F)(::from_softfloat32(lhs), ::from_softfloat32(rhs)));
       }
       template<auto F>
-      static auto adapt_f32_cmp(float32_t lhs, float32_t rhs) {
+      static auto adapt_f32_cmp(softfloat32_t lhs, softfloat32_t rhs) {
          return adapt_result(static_cast<decltype(F)>(F)(::from_softfloat32(lhs), ::from_softfloat32(rhs)));
       }
 
       template<auto F>
-      static auto adapt_f64_unop(float64_t arg) {
+      static auto adapt_f64_unop(softfloat64_t arg) {
          return ::to_softfloat64(static_cast<decltype(F)>(F)(::from_softfloat64(arg)));
       }
       template<auto F>
-      static auto adapt_f64_binop(float64_t lhs, float64_t rhs) {
+      static auto adapt_f64_binop(softfloat64_t lhs, softfloat64_t rhs) {
          return ::to_softfloat64(static_cast<decltype(F)>(F)(::from_softfloat64(lhs), ::from_softfloat64(rhs)));
       }
       template<auto F>
-      static auto adapt_f64_cmp(float64_t lhs, float64_t rhs) {
+      static auto adapt_f64_cmp(softfloat64_t lhs, softfloat64_t rhs) {
          return adapt_result(static_cast<decltype(F)>(F)(::from_softfloat64(lhs), ::from_softfloat64(rhs)));
       }
 
-      static float32_t to_softfloat(float arg) { return ::to_softfloat32(arg); }
-      static float64_t to_softfloat(double arg) { return ::to_softfloat64(arg); }
+      static softfloat32_t to_softfloat(float arg) { return ::to_softfloat32(arg); }
+      static softfloat64_t to_softfloat(double arg) { return ::to_softfloat64(arg); }
       template<typename T>
       static T to_softfloat(T arg) { return arg; }
-      static float from_softfloat(float32_t arg) { return ::from_softfloat32(arg); }
-      static double from_softfloat(float64_t arg) { return ::from_softfloat64(arg); }
+      static float from_softfloat(softfloat32_t arg) { return ::from_softfloat32(arg); }
+      static double from_softfloat(softfloat64_t arg) { return ::from_softfloat64(arg); }
       template<typename T>
       static T from_softfloat(T arg) { return arg; }
 
@@ -992,8 +992,8 @@ namespace sysio { namespace vm {
 
    #define CHOOSE_FN(name) choose_fn<&name>()
 #else
-      using float32_t = float;
-      using float64_t = double;
+      using softfloat32_t = float;
+      using softfloat64_t = double;
    #define CHOOSE_FN(name) nullptr
 #endif
 
@@ -2333,7 +2333,7 @@ namespace sysio { namespace vm {
          }
       }
 
-      void emit_f32_binop_softfloat(float32_t (*softfloatfun)(float32_t, float32_t)) {
+      void emit_f32_binop_softfloat(softfloat32_t (*softfloatfun)(softfloat32_t, softfloat32_t)) {
          auto extra = emit_setup_backtrace();
          // pushq %rdi
          emit_bytes(0x57);
@@ -2361,7 +2361,7 @@ namespace sysio { namespace vm {
          emit_bytes(0x89, 0x04, 0x24);
       }
 
-      void emit_f64_binop_softfloat(float64_t (*softfloatfun)(float64_t, float64_t)) {
+      void emit_f64_binop_softfloat(softfloat64_t (*softfloatfun)(softfloat64_t, softfloat64_t)) {
          auto extra = emit_setup_backtrace();
          // pushq %rdi
          emit_bytes(0x57);
@@ -2389,7 +2389,7 @@ namespace sysio { namespace vm {
          emit_bytes(0x48, 0x89, 0x04, 0x24);
       }
 
-      void emit_f32_relop(uint8_t opcode, uint64_t (*softfloatfun)(float32_t, float32_t), bool switch_params, bool flip_result) {
+      void emit_f32_relop(uint8_t opcode, uint64_t (*softfloatfun)(softfloat32_t, softfloat32_t), bool switch_params, bool flip_result) {
          if constexpr (use_softfloat) {
             auto extra = emit_setup_backtrace();
             // pushq %rdi
@@ -2456,7 +2456,7 @@ namespace sysio { namespace vm {
          }
       }
 
-      void emit_f64_relop(uint8_t opcode, uint64_t (*softfloatfun)(float64_t, float64_t), bool switch_params, bool flip_result) {
+      void emit_f64_relop(uint8_t opcode, uint64_t (*softfloatfun)(softfloat64_t, softfloat64_t), bool switch_params, bool flip_result) {
          if constexpr (use_softfloat) {
             auto extra = emit_setup_backtrace();
             // pushq %rdi
@@ -2545,7 +2545,7 @@ namespace sysio { namespace vm {
          emit_bytes(static_cast<uint8_t>(op)...);
       }
 
-      void emit_f32_binop(uint8_t op, float32_t (*softfloatfun)(float32_t, float32_t)) {
+      void emit_f32_binop(uint8_t op, softfloat32_t (*softfloatfun)(softfloat32_t, softfloat32_t)) {
          if constexpr (use_softfloat) {
             return emit_f32_binop_softfloat(softfloatfun);
          }
@@ -2559,7 +2559,7 @@ namespace sysio { namespace vm {
          emit_bytes(0xf3, 0x0f, 0x11, 0x04, 0x24);
       }
 
-      void emit_f64_binop(uint8_t op, float64_t (*softfloatfun)(float64_t, float64_t)) {
+      void emit_f64_binop(uint8_t op, softfloat64_t (*softfloatfun)(softfloat64_t, softfloat64_t)) {
          if constexpr (use_softfloat) {
             return emit_f64_binop_softfloat(softfloatfun);
          }
