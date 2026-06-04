@@ -25,7 +25,8 @@ namespace sysio { namespace vm {
    inline thread_local std::span<std::byte> memory_range;
 
    __attribute__((visibility("default")))
-   inline std::atomic<bool> timed_run_has_timed_out{false};
+   /// Points to the timeout state for the timed_run currently executing on this thread.
+   inline thread_local std::atomic<bool>* active_timed_run_has_timed_out{nullptr};
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
@@ -35,6 +36,7 @@ namespace sysio { namespace vm {
    inline struct sigaction prev_signal_handler;
 
    inline void signal_handler(int sig, siginfo_t* info, void* uap) {
+      ignore_unused_variable_warning(uap);
       sigjmp_buf* dest = std::atomic_load(&signal_dest);
 
       if (dest) {
@@ -48,29 +50,43 @@ namespace sysio { namespace vm {
          if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
             siglongjmp(*dest, sig);
 
-         //timed_run_has_timed_out is static and therefore applies to all threads. See backend timed_run for details.
-         // SEGV/BUS because the code_memory_range was set to PROT_NONE.
+         // active_timed_run_has_timed_out points at this thread's active timed_run state. The watchdog may set that
+         // state from another thread before disabling code pages or sending the fallback interruption signal.
+         // SEGV/BUS/ILL because the code_memory_range was set to PROT_NONE. Apple Silicon may report an
+         // instruction fetch from disabled JIT pages as SIGILL rather than SIGSEGV.
          // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
-         if ((sig == SIGSEGV || sig == SIGBUS) && timed_run_has_timed_out.load(std::memory_order_acquire) == false)
-            return;
+         if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) &&
+             (!active_timed_run_has_timed_out ||
+              !active_timed_run_has_timed_out->load(std::memory_order_acquire))) {
+            goto chain_previous_handler;
+         }
          //otherwise, jump out
          siglongjmp(*dest, sig);
 
          //if dest not set, fall through and let chained handler an opportunity to handle
       }
 
+chain_previous_handler:
       struct sigaction* prev_action;
       switch(sig) {
          case SIGSEGV: prev_action = &prev_signal_handler<SIGSEGV>; break;
          case SIGBUS: prev_action = &prev_signal_handler<SIGBUS>; break;
          case SIGFPE: prev_action = &prev_signal_handler<SIGFPE>; break;
+         case SIGILL: prev_action = &prev_signal_handler<SIGILL>; break;
          default: std::abort();
       }
       if (!prev_action) std::abort();
+      if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
+         signal(sig, SIG_DFL);
+         raise(sig);
+         std::abort();
+      }
       if (prev_action->sa_flags & SA_SIGINFO) {
          // FIXME: We need to be at least as strict as the original
          // flags and relax the mask as needed.
          prev_action->sa_sigaction(sig, info, uap);
+         sigaction(sig, prev_action, nullptr);
+         raise(sig);
       } else {
          if(prev_action->sa_handler == SIG_DFL) {
             // The default for all three signals is to terminate the process.
@@ -82,6 +98,15 @@ namespace sysio { namespace vm {
             prev_action->sa_handler(sig);
          }
       }
+   }
+
+   template<int Sig>
+   inline void install_signal_handler_once(const struct sigaction& sa) {
+      struct sigaction current;
+      sigaction(Sig, nullptr, &current);
+      if ((current.sa_flags & SA_SIGINFO) && current.sa_sigaction == &signal_handler)
+         return;
+      sigaction(Sig, &sa, &prev_signal_handler<Sig>);
    }
 
    // only valid inside invoke_with_signal_handler.
@@ -127,11 +152,12 @@ namespace sysio { namespace vm {
       sigemptyset(&sa.sa_mask);
       sigaddset(&sa.sa_mask, SIGPROF);
       sa.sa_flags = SA_NODEFER | SA_SIGINFO;
-      sigaction(SIGSEGV, &sa, &prev_signal_handler<SIGSEGV>);
+      install_signal_handler_once<SIGSEGV>(sa);
 #ifndef __linux__
-      sigaction(SIGBUS, &sa, &prev_signal_handler<SIGBUS>);
+      install_signal_handler_once<SIGBUS>(sa);
 #endif
-      sigaction(SIGFPE, &sa, &prev_signal_handler<SIGFPE>);
+      install_signal_handler_once<SIGFPE>(sa);
+      install_signal_handler_once<SIGILL>(sa);
    }
 
    inline void setup_signal_handler() {
@@ -146,7 +172,7 @@ namespace sysio { namespace vm {
    /// with non-trivial destructors, then it must mask the relevant signals
    /// during the lifetime of these objects or the behavior is undefined.
    ///
-   /// signals handled: SIGSEGV, SIGBUS (except on Linux), SIGFPE
+   /// signals handled: SIGSEGV, SIGBUS (except on Linux), SIGFPE, SIGILL
    ///
    // Make this noinline to prevent possible corruption of the caller's local variables.
    // It's unlikely, but I'm not sure that it can definitely be ruled out if both
@@ -173,6 +199,7 @@ namespace sysio { namespace vm {
          sigaddset(&unblock_mask, SIGSEGV);
          sigaddset(&unblock_mask, SIGBUS);
          sigaddset(&unblock_mask, SIGFPE);
+         sigaddset(&unblock_mask, SIGILL);
          sigaddset(&unblock_mask, SIGPROF);
          pthread_sigmask(SIG_UNBLOCK, &unblock_mask, &old_sigmask);
          try {

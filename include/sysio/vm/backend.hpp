@@ -10,8 +10,11 @@
 #include <sysio/vm/parser.hpp>
 #include <sysio/vm/types.hpp>
 
-#ifdef __x86_64__
+#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_X86_64
 #include <sysio/vm/x86_64.hpp>
+#endif
+#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
+#include <sysio/vm/aarch64.hpp>
 #endif
 
 #include <atomic>
@@ -21,13 +24,13 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
+#include <pthread.h>
+#include <signal.h>
 
 namespace sysio { namespace vm {
 
-   __attribute__((visibility("default")))
-   inline std::atomic<uint32_t> total_timed_run_in_progress{false};
-
-#ifdef __x86_64__
+#if SYS_VM_HAS_JIT_BACKEND
+   /// Normal JIT backend capability advertised by the selected architecture.
    struct jit {
       template<typename Host>
       using context = jit_execution_context<Host>;
@@ -35,7 +38,10 @@ namespace sysio { namespace vm {
       using parser = binary_parser<machine_code_writer<jit_execution_context<Host>>, Options, DebugInfo>;
       static constexpr bool is_jit = true;
    };
+#endif
 
+#if SYS_VM_HAS_JIT_PROFILE
+   /// JIT backend variant with async profiling/backtrace support.
    struct jit_profile {
       template<typename Host>
       using context = jit_execution_context<Host, true>;
@@ -90,6 +96,14 @@ namespace sysio { namespace vm {
       using host_t     = detail::host_type_t<HostFunctions>;
       using context_t  = typename Impl::template context<HostFunctions>;
       using parser_t   = typename Impl::template parser<HostFunctions, Options, DebugInfo>;
+      template <typename Watchdog>
+      static auto should_interrupt_execution_thread(Watchdog& watchdog, int) -> decltype(watchdog.should_interrupt_execution_thread()) {
+         return watchdog.should_interrupt_execution_thread();
+      }
+      template <typename Watchdog>
+      static bool should_interrupt_execution_thread(Watchdog&, ...) {
+         return true;
+      }
       void construct(host_t* host=nullptr) {
          mod->finalize();
          if (ctx.owns) {
@@ -308,33 +322,51 @@ namespace sysio { namespace vm {
 
       template<typename Watchdog, typename F>
       inline void timed_run(Watchdog&& wd, F&& f) {
-         // timed_run_has_timed_out -- declared in signal handling code because signal handler needs to inspect it on a SEGV too.
-         // It is static because all running threads share the same timeout window. Either it is a normal transaction
-         // executing on the main thread or it is a read-only transaction. All read-only transactions are limited by
-         // the same timeout so for our use case it is fine to always kill all executing transactions on a timeout.
-         // The previous timed_run_has_timed_out thread local was problematic because the timeout calling the wd_guard
-         // callback could be from any thread which would trigger the wrong timed_run_has_timed_out leaving a thread
-         // executing.
-         auto reenable_code = scope_guard{[this](){
-            --total_timed_run_in_progress;
+         // The signal handler reads this execution's timeout flag. The watchdog callback may
+         // run on a different thread, so this timed_run owns a state object that both the watchdog and execution thread
+         // can observe without leaking timeout classification across unrelated executions.
+         std::atomic<bool> timed_run_has_timed_out{false};
+         std::atomic<bool> timed_run_disabled_code{false};
+         std::atomic<bool>* const previous_timed_run_has_timed_out = active_timed_run_has_timed_out;
+         active_timed_run_has_timed_out = &timed_run_has_timed_out;
+         auto restore_timeout_state = scope_guard{[previous_timed_run_has_timed_out]() {
+            active_timed_run_has_timed_out = previous_timed_run_has_timed_out;
+         }};
+         auto reenable_code = scope_guard{[this, &timed_run_has_timed_out, &timed_run_disabled_code](){
             --mod->allocator.timed_run_in_progress;
-            if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
-               if (total_timed_run_in_progress == 0) {
-                  timed_run_has_timed_out.store(false, std::memory_order_release);
-               }
+            if (timed_run_has_timed_out.load(std::memory_order_acquire) &&
+                timed_run_disabled_code.load(std::memory_order_acquire)) {
                if (mod->allocator.timed_run_in_progress == 0) {
                   mod->allocator.enable_code(Impl::is_jit);
                }
             }
          }};
          try {
-            ++total_timed_run_in_progress;
             ++mod->allocator.timed_run_in_progress;
-            auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this]() {
+            pthread_t execution_thread = pthread_self();
+            auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this, execution_thread,
+                                                                    &wd,
+                                                                    &timed_run_has_timed_out,
+                                                                    &timed_run_disabled_code]() {
                timed_run_has_timed_out.store(true, std::memory_order_release);
-               mod->allocator.disable_code();
+#if SYS_VM_TARGET_ARM64
+               // Apple Silicon cannot safely force asynchronous C++ unwinding around generated JIT frames for
+               // cooperative fork interruption. Real deadline expiry can still interrupt the execution thread.
+               if (should_interrupt_execution_thread(wd, 0) && !pthread_equal(pthread_self(), execution_thread))
+                  pthread_kill(execution_thread, SIGSEGV);
+#else
+               if (!mod->allocator.disable_code()) {
+                  pthread_kill(execution_thread, SIGSEGV);
+               } else {
+                  timed_run_disabled_code.store(true, std::memory_order_release);
+               }
+#endif
             });
+            if (timed_run_has_timed_out.load(std::memory_order_acquire))
+               throw timeout_exception{ "execution timed out" };
             std::forward<F>(f)();
+            if (timed_run_has_timed_out.load(std::memory_order_acquire))
+               throw timeout_exception{ "execution timed out" };
          } catch(wasm_memory_exception&) {
             if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
                throw timeout_exception{ "execution timed out" };

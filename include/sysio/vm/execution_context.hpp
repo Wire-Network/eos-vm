@@ -203,7 +203,7 @@ namespace sysio { namespace vm {
       static void type_check_args(const Func_type& ft, Args&&...) {
          SYS_VM_ASSERT(sizeof...(Args) == ft.param_types.size(), wasm_interpreter_exception, "wrong number of arguments");
          uint32_t i = 0;
-         SYS_VM_ASSERT((... && (to_wasm_type_v<detail::type_converter_t<Host>, Args> == ft.param_types.at(i++))), wasm_interpreter_exception, "unexpected argument type");
+         SYS_VM_ASSERT((... && (to_wasm_type_v<detail::type_converter_t<Host>, std::decay_t<Args>> == ft.param_types.at(i++))), wasm_interpreter_exception, "unexpected argument type");
       }
 
       static void handle_signal(int sig) {
@@ -211,6 +211,7 @@ namespace sysio { namespace vm {
           case SIGSEGV:
           case SIGBUS:
           case SIGFPE:
+          case SIGILL:
             break;
           default:
             /* TODO fix this */
@@ -271,6 +272,17 @@ namespace sysio { namespace vm {
          _remaining_call_depth = max_call_depth;
       }
 
+      /// Reserves one JIT call-depth slot before a generated function calls another function.
+      void enter_jit_call() {
+         SYS_VM_ASSERT(_remaining_call_depth > 1, wasm_interpreter_exception, "call depth exceeded");
+         --_remaining_call_depth;
+      }
+
+      /// Releases one JIT call-depth slot after a generated function returns from another function.
+      void exit_jit_call() {
+         ++_remaining_call_depth;
+      }
+
       inline native_value call_host_function(native_value* stack, uint32_t index) {
          const auto& ft = _mod->jit_mod->get_function_type(index);
          uint32_t num_params = ft.param_types.size();
@@ -314,7 +326,12 @@ namespace sysio { namespace vm {
       inline std::optional<operand_stack_elem> execute(host_type* host, jit_visitor, uint32_t func_index, Args&&... args) {
          auto saved_host = _host;
          auto saved_os_size = get_operand_stack().size();
-         auto g = scope_guard([&](){ _host = saved_host; get_operand_stack().eat(saved_os_size); });
+         auto saved_remaining_call_depth = _remaining_call_depth;
+         auto g = scope_guard([&](){
+            _host = saved_host;
+            _remaining_call_depth = saved_remaining_call_depth;
+            get_operand_stack().eat(saved_os_size);
+         });
 
          _host = host;
 
@@ -341,9 +358,19 @@ namespace sysio { namespace vm {
                // reserve 24 bytes for data accessed by inline assembly
                void* stack = alt_stack.top();
                if(stack) {
+#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
+                  // AArch64 requires 16-byte stack alignment and only needs one save slot for the caller SP.
+                  stack = static_cast<char*>(stack) - 16;
+#else
                   stack = static_cast<char*>(stack) - 24;
+#endif
                }
-               auto fn = reinterpret_cast<native_value (*)(void*, void*)>(_mod->jit_mod->jit_code_offset[func_index - _mod->jit_mod->get_imported_functions_size()] + _mod->allocator._code_base);
+#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
+               using jit_fn_type = native_value (*)(void*, void*, native_value*);
+#else
+               using jit_fn_type = native_value (*)(void*, void*);
+#endif
+               auto fn = reinterpret_cast<jit_fn_type>(_mod->jit_mod->jit_code_offset[func_index - _mod->jit_mod->get_imported_functions_size()] + _mod->allocator._code_base);
 
                if constexpr(EnableBacktrace) {
                   sigset_t block_mask;
@@ -381,7 +408,7 @@ namespace sysio { namespace vm {
          __builtin_unreachable();
       }
 
-#ifdef __x86_64__
+#if SYS_VM_HAS_JIT_PROFILE
       int backtrace(void** out, int count, void* uc) const {
          static_assert(EnableBacktrace);
          void* end = this->_top_frame;
@@ -438,7 +465,9 @@ namespace sysio { namespace vm {
          }
          return i;
       }
+#endif
 
+#if SYS_VM_HAS_JIT_BACKEND
       static constexpr bool async_backtrace() { return EnableBacktrace; }
 #endif
 
@@ -482,12 +511,12 @@ namespace sysio { namespace vm {
          native_value result;
          std::memset(&result, 0, sizeof(result));
          auto tc = detail::type_converter_t<Host>{_host, get_interface()};
-         auto transformed_value = detail::resolve_result(tc, std::forward<T>(value)).data;
+         auto transformed_value = detail::resolve_result(tc, std::decay_t<T>(std::forward<T>(value))).data;
          std::memcpy(&result, &transformed_value, sizeof(transformed_value));
          return result;
       }
 
-#ifdef __x86_64__
+#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_X86_64
       /* TODO abstract this and clean this up a bit, this really doesn't belong here */
       template<int Count>
       static native_value execute(native_value* data, native_value (*fun)(void*, void*), jit_execution_context* context, void* linear_memory, void* stack) {
@@ -551,6 +580,49 @@ namespace sysio { namespace vm {
                      "mov %[fun], 8(%[context]); ");
          }
 #undef ASM_CODE
+         return result;
+      }
+#endif
+
+#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
+      /**
+       * Minimal AArch64 trampoline.
+       *
+       * The production x86_64 path has a full argument-marshalling assembly trampoline. The
+       * Apple Silicon backend receives a native_value argument array directly and keeps all
+       * WASM scalar values in general-purpose registers.
+       */
+      template<int Count>
+      static native_value execute(native_value* data, native_value (*fun)(void*, void*, native_value*), jit_execution_context* context,
+                                  void* linear_memory, void* stack) {
+         static_assert(sizeof(native_value) == 8, "8-bytes expected for native_value");
+         native_value result;
+         register void*         arg0 asm("x0")  = context;
+         register void*         arg1 asm("x1")  = linear_memory;
+         register native_value* arg2 asm("x2")  = data;
+         register void*         target asm("x9") = reinterpret_cast<void*>(fun);
+         register void*         stack_top asm("x20") = stack;
+
+         asm volatile(
+            "sub sp, sp, #16\n"
+            "str x20, [sp]\n"
+            "mov x11, sp\n"
+            "cbz x20, 1f\n"
+            "str x11, [x20]\n"
+            "mov sp, x20\n"
+            "1:\n"
+            "blr x9\n"
+            "cbz x20, 2f\n"
+            "ldr x11, [x20]\n"
+            "mov sp, x11\n"
+            "2:\n"
+            "ldr x20, [sp]\n"
+            "add sp, sp, #16\n"
+            : "+r"(arg0), "+r"(arg1), "+r"(arg2), "+r"(target)
+            : "r"(stack_top)
+            : "memory", "cc", "x3", "x4", "x5", "x6", "x7", "x8", "x10", "x11", "x12", "x13", "x14", "x15",
+              "x16", "x17", "x30");
+         std::memcpy(&result, &arg0, sizeof(result));
          return result;
       }
 #endif
@@ -840,7 +912,7 @@ namespace sysio { namespace vm {
       void push_args(Args&&... args) {
          auto tc = detail::type_converter_t<Host>{ _host, get_interface() };
          (void)tc;
-         (... , push_operand(detail::resolve_result(tc, std::forward<Args>(args))));
+         (... , push_operand(detail::resolve_result(tc, std::decay_t<Args>(std::forward<Args>(args)))));
       }
 
       inline void setup_locals(uint32_t index) {

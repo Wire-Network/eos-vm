@@ -17,9 +17,81 @@
 #include <vector>
 
 #include <sys/mman.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <pthread.h>
+#endif
 #include <unistd.h>
 
+#if defined(__APPLE__) && defined(__aarch64__) && !defined(MAP_JIT)
+#error "Apple Silicon sys-vm-jit requires MAP_JIT support"
+#endif
+
 namespace sysio { namespace vm {
+   namespace detail {
+#if defined(__APPLE__) && defined(__aarch64__)
+      /// True when executable JIT pages use Apple's per-thread write-protection API.
+      inline constexpr bool use_apple_jit_write_protect = true;
+#else
+      /// True when executable JIT pages use Apple's per-thread write-protection API.
+      inline constexpr bool use_apple_jit_write_protect = false;
+#endif
+
+      /// Returns the platform-specific executable-memory mapping flags for JIT segments.
+      inline int jit_segment_flags() {
+         int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(__APPLE__) && defined(__aarch64__)
+         flags |= MAP_JIT;
+#endif
+         return flags;
+      }
+
+      /// Returns the initial JIT segment protection for the current platform.
+      inline int jit_segment_protection() {
+#if defined(__APPLE__) && defined(__aarch64__)
+         return PROT_READ | PROT_WRITE | PROT_EXEC;
+#else
+         return PROT_READ | PROT_WRITE;
+#endif
+      }
+
+      /// Returns the executable protection used by non-Apple JIT pages after code emission.
+      inline int executable_code_protection() {
+#if defined(__APPLE__) && defined(__aarch64__)
+         return PROT_READ | PROT_WRITE | PROT_EXEC;
+#else
+         return PROT_EXEC;
+#endif
+      }
+
+      /// Toggles Apple Silicon's per-thread JIT write protection. Other platforms are no-ops.
+      inline void set_jit_write_protect(bool enabled) {
+#if defined(__APPLE__) && defined(__aarch64__)
+         pthread_jit_write_protect_np(enabled);
+#else
+         (void)enabled;
+#endif
+      }
+
+      /// Opens and closes the Apple Silicon per-thread JIT write window for generated-code updates.
+      class jit_write_scope {
+       public:
+         /// Opens a per-thread JIT write window on Apple Silicon.
+         jit_write_scope() { set_jit_write_protect(false); }
+
+         /// Restores per-thread JIT write protection before generated code can execute.
+         ~jit_write_scope() { set_jit_write_protect(true); }
+
+         jit_write_scope(const jit_write_scope&) = delete;
+         jit_write_scope& operator=(const jit_write_scope&) = delete;
+      };
+
+      /// Flushes the instruction cache for generated or patched native code.
+      inline void flush_instruction_cache(void* begin, std::size_t size) {
+         auto* first = static_cast<char*>(begin);
+         __builtin___clear_cache(first, first + size);
+      }
+   } // namespace detail
+
    class bounded_allocator {
     public:
       bounded_allocator(size_t size) {
@@ -216,11 +288,8 @@ namespace sysio { namespace vm {
 
       blocks_by_size_t::iterator allocate_segment(std::size_t min_size) {
          std::size_t size = std::max(min_size, segment_size);
-         // To avoid additional memory mappings being created during permission changes of
-         // from PROT_EXEC to PROT_READ | PROT_WRITE, and back to PROT_EXEC,
-         // set permisions to PROT_READ | PROT_WRITE initially.
-         // The permission will be changed to PROT_EXEC after executible code is copied.
-         void* base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         // Apple Silicon requires MAP_JIT at mapping creation time; other platforms keep the existing RW-to-X flow.
+         void* base = mmap(nullptr, size, detail::jit_segment_protection(), detail::jit_segment_flags(), -1, 0);
          SYS_VM_ASSERT(base != MAP_FAILED, wasm_bad_alloc, "failed to allocate jit segment");
          segment s{base, size};
          _segments.emplace_back(std::move(s));
@@ -352,24 +421,66 @@ namespace sysio { namespace vm {
          if constexpr (IsJit) {
             auto & jit_alloc = jit_allocator::instance();
             void * executable_code = jit_alloc.alloc(_code_size);
-            int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
-            SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
-            std::memcpy(executable_code, _code_base, _code_size);
+            if constexpr (detail::use_apple_jit_write_protect) {
+               detail::jit_write_scope write_scope;
+               std::memcpy(executable_code, _code_base, _code_size);
+            } else {
+               int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
+               SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+               std::memcpy(executable_code, _code_base, _code_size);
+            }
+            detail::flush_instruction_cache(executable_code, _code_size);
             _code_base = (char*)executable_code;
-            enable_code(IsJit);
+            SYS_VM_ASSERT(enable_code(IsJit), wasm_bad_alloc, "mprotect failed");
             _is_jit = true;
             _offset = (char*)code_base - _base;
          }
       }
 
-      // Sets protection on code pages to allow them to be executed.
-      void enable_code(bool is_jit) {
-         mprotect(_code_base, _code_size, is_jit?PROT_EXEC:(PROT_READ|PROT_WRITE));
+      /// Sets protection on code pages to allow them to be executed.
+      bool enable_code(bool is_jit) {
+         if (is_jit) {
+            if constexpr (detail::use_apple_jit_write_protect) {
+               if (_code_disabled) {
+                  detail::set_jit_write_protect(false);
+                  int err = mprotect(_code_base, _code_size, detail::executable_code_protection());
+                  detail::set_jit_write_protect(true);
+                  if (err != 0)
+                     return false;
+                  _code_disabled = false;
+               }
+               detail::set_jit_write_protect(true);
+               return true;
+            } else {
+               int err = mprotect(_code_base, _code_size, detail::executable_code_protection());
+               if (err != 0)
+                  return false;
+               _code_disabled = false;
+               return true;
+            }
+         } else {
+            int err = mprotect(_code_base, _code_size, PROT_READ | PROT_WRITE);
+            if (err != 0)
+               return false;
+            _code_disabled = false;
+            return true;
+         }
       }
-      // Make code pages unexecutable so deadline timer can kill an
-      // execution (in both JIT and Interpreter)
-      void disable_code() {
-         mprotect(_code_base, _code_size, PROT_NONE);
+      /// Makes code pages unexecutable so the deadline timer can interrupt execution.
+      bool disable_code() {
+         if constexpr (detail::use_apple_jit_write_protect) {
+            if (_is_jit)
+               detail::set_jit_write_protect(false);
+         }
+         int err = mprotect(_code_base, _code_size, PROT_NONE);
+         if constexpr (detail::use_apple_jit_write_protect) {
+            if (_is_jit)
+               detail::set_jit_write_protect(true);
+         }
+         if (err != 0)
+            return false;
+         _code_disabled = true;
+         return true;
       }
 
       const void* get_code_start() const { return _code_base; }
@@ -430,6 +541,7 @@ namespace sysio { namespace vm {
       size_t   _code_size             = 0;
       bool     _is_jit                = false;
       std::atomic<uint32_t> timed_run_in_progress{0};
+      bool     _code_disabled         = false;
    };
 
    template <typename T>

@@ -1,9 +1,24 @@
 #include <sysio/vm/allocator.hpp>
+#include <sysio/vm/signals.hpp>
 
 #include <catch2/catch.hpp>
 
+#include <csignal>
+#include <cstring>
+#include <pthread.h>
+
 using namespace sysio;
 using namespace sysio::vm;
+
+namespace {
+#if defined(__x86_64__)
+/// Native function body that returns 42 on x86_64.
+constexpr unsigned char return_42_code[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
+#elif defined(__aarch64__) || defined(_M_ARM64)
+/// Native function body that returns 42 on AArch64.
+constexpr unsigned char return_42_code[] = {0x40, 0x05, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6};
+#endif
+}
 
 template<typename T>
 bool check_alignment(T* ptr) {
@@ -155,4 +170,49 @@ TEST_CASE("Testing mixed use_fixed_memory and alloc2.use_default_memory", "[grow
    alloc2.use_fixed_memory(1024);
    // use_fixed_memory and use_default_memory cannot be mixed
    CHECK_THROWS_AS(alloc2.use_default_memory(), wasm_bad_alloc);
+}
+
+TEST_CASE("Testing JIT code copy, disable, and re-enable", "[growable_allocator]") {
+#if defined(__x86_64__) || defined(__aarch64__) || defined(_M_ARM64)
+   growable_allocator alloc;
+   alloc.use_fixed_memory(4096);
+
+   void* code_base = alloc.start_code();
+   auto* code = alloc.alloc<unsigned char>(sizeof(return_42_code));
+   std::memcpy(code, return_42_code, sizeof(return_42_code));
+   alloc.end_code<true>(code_base);
+
+   using return_42_fn = int (*)();
+   auto* fn = reinterpret_cast<return_42_fn>(const_cast<void*>(alloc.get_code_start()));
+   CHECK(fn() == 42);
+
+   bool interrupted = false;
+   bool disabled = alloc.disable_code();
+   std::atomic<bool> timed_run_has_timed_out{true};
+   std::atomic<bool>* old_timed_run_has_timed_out = active_timed_run_has_timed_out;
+   active_timed_run_has_timed_out = &timed_run_has_timed_out;
+   auto restore_timed_run_has_timed_out = scope_guard{[old_timed_run_has_timed_out]() {
+      active_timed_run_has_timed_out = old_timed_run_has_timed_out;
+   }};
+   if (disabled) {
+      invoke_with_signal_handler([&]() {
+         (void)fn();
+      }, [&](int sig) {
+         interrupted = sig == SIGSEGV || sig == SIGBUS;
+      }, alloc, nullptr);
+   } else {
+      invoke_with_signal_handler([&]() {
+         pthread_kill(pthread_self(), SIGSEGV);
+      }, [&](int sig) {
+         interrupted = sig == SIGSEGV;
+      }, alloc, nullptr);
+   }
+   timed_run_has_timed_out.store(false, std::memory_order_release);
+
+   CHECK(interrupted);
+   CHECK(alloc.enable_code(true));
+   CHECK(fn() == 42);
+#else
+   SUCCEED("No native code stub is defined for this architecture");
+#endif
 }

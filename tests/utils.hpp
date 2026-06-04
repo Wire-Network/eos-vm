@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <sysio/vm/allocator.hpp>
+#include <sysio/vm/config.hpp>
 #include <sysio/vm/stack_elem.hpp>
 #include <sysio/vm/utils.hpp>
 
@@ -52,7 +53,8 @@ inline sysio::vm::wasm_allocator* get_wasm_allocator() {
    return &alloc;
 }
 
-#ifdef __x86_64__
+/// Expands backend tests across every backend compiled into this sys-vm target.
+#if SYS_VM_HAS_JIT_BACKEND
 #define BACKEND_TEST_CASE(name, tags) \
   TEMPLATE_TEST_CASE(name, tags, sysio::vm::interpreter, sysio::vm::jit)
 #else
