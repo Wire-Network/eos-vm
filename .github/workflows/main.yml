@@ -25,10 +25,30 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Install ccache
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y ccache
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            brew install ccache
+          fi
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: .ccache
+          key: ${{ runner.os }}-ccache-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-ccache-${{ github.ref_name }}-
+            ${{ runner.os }}-ccache-
+
       - name: Bootstrap vcpkg
         run: ./vcpkg/bootstrap-vcpkg.sh
 
       - name: Configure
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: >
           cmake
           -S .
@@ -37,9 +57,18 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DENABLE_TESTS=ON
           -DENABLE_SPEC_TESTS=ON
+          -DENABLE_CCACHE=ON
 
       - name: Build
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
         run: cmake --build build -j 5
+
+      - name: ccache stats
+        if: always()
+        env:
+          CCACHE_DIR: ${{ github.workspace }}/.ccache
+        run: ccache --show-stats
 
       - name: Test
         run: ctest --test-dir build --output-on-failure -j 5
