@@ -39,7 +39,7 @@ jobs:
           -DENABLE_SPEC_TESTS=ON
 
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build build -j 5
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure --parallel
+        run: ctest --test-dir build --output-on-failure -j 5
