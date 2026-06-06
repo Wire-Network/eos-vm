@@ -14,24 +14,38 @@ using sysio::vm::watchdog;
 extern sysio::vm::wasm_allocator wa;
 
 namespace {
-struct cooperative_interrupt_watchdog {
-   /// Keeps the watchdog scope API compatible with sysio::vm::watchdog.
-   struct guard {};
+struct execution_thread_interrupt_watchdog {
+   /// Joins the watchdog thread when timed_run leaves its protected execution scope.
+   struct guard {
+      std::thread callback_thread;
 
-   /// Fires the callback from a watchdog thread, matching chain interrupt timers.
+      ~guard() {
+         if (callback_thread.joinable())
+            callback_thread.join();
+      }
+   };
+
+   /// Fires after JIT execution starts so the test proves generated code can be interrupted.
    template <typename F>
    guard scoped_run(F&& callback) {
-      std::thread callback_thread{ std::forward<F>(callback) };
-      callback_thread.join();
-      return {};
+      return guard{ std::thread{ [callback = std::forward<F>(callback)]() mutable {
+         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+         callback();
+      } } };
    }
-
-   /// Cooperative interrupts must be observed at safe timed_run boundaries.
-   bool should_interrupt_execution_thread() const { return false; }
 };
 
-/// Builds a minimal valid module so backend::timed_run has initialized allocator state.
-std::vector<uint8_t> make_empty_wasm_module() { return { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 }; }
+/// Builds a module with an exported function whose body never reaches a timed_run boundary.
+std::vector<uint8_t> make_infinite_loop_wasm_module() {
+   /*
+    * (module
+    *   (func (export "loop")
+    *     (loop br 0)))
+    */
+   return { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
+            0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x6c, 0x6f, 0x6f, 0x70, 0x00, 0x00,
+            0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b };
+}
 } // namespace
 
 TEST_CASE("watchdog interrupt", "[watchdog_interrupt]") {
@@ -55,14 +69,16 @@ TEST_CASE("watchdog no interrupt", "[watchdog_no_interrupt]") {
 }
 
 #if SYS_VM_TARGET_ARM64
-TEST_CASE("cooperative watchdog interrupt does not signal execution thread", "[watchdog_interrupt][aarch64]") {
-   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::interpreter>;
-   auto      code  = make_empty_wasm_module();
+#if SYS_VM_HAS_JIT_BACKEND
+TEST_CASE("AArch64 JIT watchdog interrupt disables code pages", "[watchdog_interrupt][jit][aarch64]") {
+   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
+   auto      code  = make_infinite_loop_wasm_module();
    backend_t bkend(code, &wa);
 
-   bool executed = false;
-   CHECK_THROWS_AS(bkend.timed_run(cooperative_interrupt_watchdog{}, [&]() { executed = true; }),
+   CHECK_THROWS_AS(bkend.timed_run(execution_thread_interrupt_watchdog{}, [&]() {
+                      bkend.call("env", "loop");
+                   }),
                    sysio::vm::timeout_exception);
-   CHECK_FALSE(executed);
 }
+#endif
 #endif

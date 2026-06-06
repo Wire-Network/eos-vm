@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sysio/vm/allocator.hpp>
+#include <sysio/vm/config.hpp>
 #include <sysio/vm/constants.hpp>
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/execution_interface.hpp>
@@ -22,6 +23,7 @@
 #include <optional>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 // OSX requires _XOPEN_SOURCE to #include <ucontext.h>
@@ -358,18 +360,12 @@ namespace sysio { namespace vm {
                // reserve 24 bytes for data accessed by inline assembly
                void* stack = alt_stack.top();
                if(stack) {
-#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
-                  // AArch64 requires 16-byte stack alignment and only needs one save slot for the caller SP.
-                  stack = static_cast<char*>(stack) - 16;
-#else
-                  stack = static_cast<char*>(stack) - 24;
-#endif
+                  constexpr std::ptrdiff_t jit_stack_reserve = sys_vm_has_aarch64_jit_backend ? 16 : 24;
+                  stack = static_cast<char*>(stack) - jit_stack_reserve;
                }
-#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
-               using jit_fn_type = native_value (*)(void*, void*, native_value*);
-#else
-               using jit_fn_type = native_value (*)(void*, void*);
-#endif
+               using jit_fn_type = std::conditional_t<sys_vm_has_aarch64_jit_backend,
+                                                       native_value (*)(void*, void*, native_value*),
+                                                       native_value (*)(void*, void*)>;
                auto fn = reinterpret_cast<jit_fn_type>(_mod->jit_mod->jit_code_offset[func_index - _mod->jit_mod->get_imported_functions_size()] + _mod->allocator._code_base);
 
                if constexpr(EnableBacktrace) {

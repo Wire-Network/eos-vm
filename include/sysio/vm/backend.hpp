@@ -96,14 +96,6 @@ namespace sysio { namespace vm {
       using host_t     = detail::host_type_t<HostFunctions>;
       using context_t  = typename Impl::template context<HostFunctions>;
       using parser_t   = typename Impl::template parser<HostFunctions, Options, DebugInfo>;
-      template <typename Watchdog>
-      static auto should_interrupt_execution_thread(Watchdog& watchdog, int) -> decltype(watchdog.should_interrupt_execution_thread()) {
-         return watchdog.should_interrupt_execution_thread();
-      }
-      template <typename Watchdog>
-      static bool should_interrupt_execution_thread(Watchdog&, ...) {
-         return true;
-      }
       void construct(host_t* host=nullptr) {
          mod->finalize();
          if (ctx.owns) {
@@ -349,18 +341,15 @@ namespace sysio { namespace vm {
                                                                     &timed_run_has_timed_out,
                                                                     &timed_run_disabled_code]() {
                timed_run_has_timed_out.store(true, std::memory_order_release);
-#if SYS_VM_TARGET_ARM64
-               // Apple Silicon cannot safely force asynchronous C++ unwinding around generated JIT frames for
-               // cooperative fork interruption. Real deadline expiry can still interrupt the execution thread.
-               if (should_interrupt_execution_thread(wd, 0) && !pthread_equal(pthread_self(), execution_thread))
-                  pthread_kill(execution_thread, SIGSEGV);
-#else
+               // Apple Silicon can stop tight generated-code loops the same way x86_64 does: revoke execute
+               // permission from the JIT code pages and let the execution thread fault on instruction fetch inside
+               // invoke_with_signal_handler. A synthetic SIGSEGV is kept only as a fallback for platforms where
+               // the code-page protection change fails.
                if (!mod->allocator.disable_code()) {
                   pthread_kill(execution_thread, SIGSEGV);
                } else {
                   timed_run_disabled_code.store(true, std::memory_order_release);
                }
-#endif
             });
             if (timed_run_has_timed_out.load(std::memory_order_acquire))
                throw timeout_exception{ "execution timed out" };
