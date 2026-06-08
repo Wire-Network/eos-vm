@@ -309,6 +309,14 @@ namespace sysio { namespace vm {
                   });
                }
             }
+
+            if (type_aliases.size() > 0) {
+               jit_mod->type_aliases.assign(type_aliases.data(), type_aliases.data() + type_aliases.size());
+            }
+
+            if (fast_functions.size() > 0) {
+               jit_mod->fast_functions.assign(fast_functions.data(), fast_functions.data() + fast_functions.size());
+            }
          }
 
          if (globals.size() > 0) {
@@ -350,15 +358,6 @@ namespace sysio { namespace vm {
             jit_mod->import_functions.assign(import_functions.data(), import_functions.data() + import_functions.size());
          }
 
-         if constexpr (sys_vm_has_aarch64_jit_backend) {
-            if (type_aliases.size() > 0) {
-               jit_mod->type_aliases.assign(type_aliases.data(), type_aliases.data() + type_aliases.size());
-            }
-
-            if (fast_functions.size() > 0) {
-               jit_mod->fast_functions.assign(fast_functions.data(), fast_functions.data() + fast_functions.size());
-            }
-         }
       }
 
       void finalize() {

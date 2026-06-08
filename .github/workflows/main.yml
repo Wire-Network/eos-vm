@@ -59,10 +59,19 @@ jobs:
           -DENABLE_SPEC_TESTS=ON
           -DENABLE_CCACHE=ON
 
+      - name: Set parallelism
+        run: |
+          if command -v nproc >/dev/null 2>&1; then
+            jobs="$(nproc)"
+          else
+            jobs="$(sysctl -n hw.ncpu)"
+          fi
+          echo "CI_JOBS=${jobs}" >> "${GITHUB_ENV}"
+
       - name: Build
         env:
           CCACHE_DIR: ${{ github.workspace }}/.ccache
-        run: cmake --build build -j 5
+        run: cmake --build build --parallel "${CI_JOBS}"
 
       - name: ccache stats
         if: always()
@@ -71,4 +80,4 @@ jobs:
         run: ccache --show-stats
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure -j 5
+        run: ctest --test-dir build --output-on-failure --parallel "${CI_JOBS}"

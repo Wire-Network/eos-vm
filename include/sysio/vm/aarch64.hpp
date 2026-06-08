@@ -12,7 +12,6 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
-#include <string>
 #include <vector>
 
 namespace sysio { namespace vm {
@@ -926,7 +925,7 @@ namespace sysio { namespace vm {
 
       /// Throws a parse exception for an unsupported AArch64 operation.
       [[noreturn]] static void unsupported(const char* opcode) {
-         throw wasm_parse_exception{ std::string{ "AArch64 JIT does not support opcode " } + opcode };
+         throw wasm_parse_exception{ opcode };
       }
 
       /// Throws a parse exception and satisfies branch-typed parser expressions.
@@ -1280,8 +1279,7 @@ namespace sysio { namespace vm {
 
       /// Produces a readable failure when a float opcode is reached without softfloat support.
       [[noreturn]] static void softfloat_disabled(const char* opcode) {
-         throw wasm_parse_exception{ std::string{ "AArch64 JIT requires SYS_VM_SOFTFLOAT for opcode " } +
-                                     opcode };
+         throw wasm_parse_exception{ opcode };
       }
 
       /// Runs a trap-capable softfloat conversion behind the JIT longjmp boundary.
@@ -1293,743 +1291,198 @@ namespace sysio { namespace vm {
       }
 
 #ifdef SYS_VM_SOFTFLOAT
-      /// Reinterprets raw f32 bits as a softfloat value.
-      static softfloat32_t to_raw_f32(uint32_t bits) { return softfloat32_t{ bits }; }
+      static float bits_to_f32(uint32_t bits) { return ::from_softfloat32(softfloat32_t{ bits }); }
+      static double bits_to_f64(uint64_t bits) { return ::from_softfloat64(softfloat64_t{ bits }); }
+      static uint32_t f32_to_bits(float value) { return ::to_softfloat32(value).v; }
+      static uint64_t f64_to_bits(double value) { return ::to_softfloat64(value).v; }
 
-      /// Reinterprets raw f64 bits as a softfloat value.
-      static softfloat64_t to_raw_f64(uint64_t bits) { return softfloat64_t{ bits }; }
+      /// Raw-bit host adapters for the existing interpreter softfloat implementation.
+      static uint32_t soft_f32_eq(uint32_t lhs, uint32_t rhs) { return _sysio_f32_eq(bits_to_f32(lhs), bits_to_f32(rhs)); }
+      static uint32_t soft_f32_ne(uint32_t lhs, uint32_t rhs) { return _sysio_f32_ne(bits_to_f32(lhs), bits_to_f32(rhs)); }
+      static uint32_t soft_f32_lt(uint32_t lhs, uint32_t rhs) { return _sysio_f32_lt(bits_to_f32(lhs), bits_to_f32(rhs)); }
+      static uint32_t soft_f32_gt(uint32_t lhs, uint32_t rhs) { return _sysio_f32_gt(bits_to_f32(lhs), bits_to_f32(rhs)); }
+      static uint32_t soft_f32_le(uint32_t lhs, uint32_t rhs) { return _sysio_f32_le(bits_to_f32(lhs), bits_to_f32(rhs)); }
+      static uint32_t soft_f32_ge(uint32_t lhs, uint32_t rhs) { return _sysio_f32_ge(bits_to_f32(lhs), bits_to_f32(rhs)); }
+      static uint32_t soft_f64_eq(uint64_t lhs, uint64_t rhs) { return _sysio_f64_eq(bits_to_f64(lhs), bits_to_f64(rhs)); }
+      static uint32_t soft_f64_ne(uint64_t lhs, uint64_t rhs) { return _sysio_f64_ne(bits_to_f64(lhs), bits_to_f64(rhs)); }
+      static uint32_t soft_f64_lt(uint64_t lhs, uint64_t rhs) { return _sysio_f64_lt(bits_to_f64(lhs), bits_to_f64(rhs)); }
+      static uint32_t soft_f64_gt(uint64_t lhs, uint64_t rhs) { return _sysio_f64_gt(bits_to_f64(lhs), bits_to_f64(rhs)); }
+      static uint32_t soft_f64_le(uint64_t lhs, uint64_t rhs) { return _sysio_f64_le(bits_to_f64(lhs), bits_to_f64(rhs)); }
+      static uint32_t soft_f64_ge(uint64_t lhs, uint64_t rhs) { return _sysio_f64_ge(bits_to_f64(lhs), bits_to_f64(rhs)); }
 
-      /// Returns true when raw f32 bits represent NaN.
-      static bool raw_f32_is_nan(uint32_t bits) { return ::f32_is_nan(to_raw_f32(bits)); }
-
-      /// Returns true when raw f64 bits represent NaN.
-      static bool raw_f64_is_nan(uint64_t bits) { return ::f64_is_nan(to_raw_f64(bits)); }
-#endif
-
-      static constexpr uint32_t f32_sign_mask_bits = 0x80000000u;
-      static constexpr uint32_t f32_abs_mask_bits  = 0x7fffffffu;
-      static constexpr uint32_t f32_one_bits       = 0x3f800000u;
-      static constexpr uint32_t f32_neg_one_bits   = 0xbf800000u;
-      static constexpr uint32_t f32_pos_i32_limit  = 0x4f000000u;
-      static constexpr uint32_t f32_neg_i32_limit  = 0xcf000000u;
-      static constexpr uint32_t f32_pos_u32_limit  = 0x4f800000u;
-      static constexpr uint32_t f32_pos_i64_limit  = 0x5f000000u;
-      static constexpr uint32_t f32_neg_i64_limit  = 0xdf000000u;
-      static constexpr uint32_t f32_pos_u64_limit  = 0x5f800000u;
-      static constexpr uint64_t f64_sign_mask_bits = 0x8000000000000000ull;
-      static constexpr uint64_t f64_abs_mask_bits  = 0x7fffffffffffffffull;
-      static constexpr uint64_t f64_one_bits       = 0x3ff0000000000000ull;
-      static constexpr uint64_t f64_neg_one_bits   = 0xbff0000000000000ull;
-      static constexpr uint64_t f64_pos_i32_limit  = 0x41e0000000000000ull;
-      static constexpr uint64_t f64_neg_i32_limit  = 0xc1e0000000000000ull;
-      static constexpr uint64_t f64_pos_u32_limit  = 0x41f0000000000000ull;
-      static constexpr uint64_t f64_pos_i64_limit  = 0x43e0000000000000ull;
-      static constexpr uint64_t f64_neg_i64_limit  = 0xc3e0000000000000ull;
-      static constexpr uint64_t f64_pos_u64_limit  = 0x43f0000000000000ull;
-
-      /// Implements f32 equality with raw softfloat bit arguments.
-      static uint32_t soft_f32_eq(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_eq(to_raw_f32(lhs), to_raw_f32(rhs)) ? 1u : 0u;
-#else
-         softfloat_disabled("f32.eq");
-#endif
-      }
-
-      /// Implements f32 inequality with raw softfloat bit arguments.
-      static uint32_t soft_f32_ne(uint32_t lhs, uint32_t rhs) { return soft_f32_eq(lhs, rhs) ? 0u : 1u; }
-
-      /// Implements f32 less-than with raw softfloat bit arguments.
-      static uint32_t soft_f32_lt(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_lt(to_raw_f32(lhs), to_raw_f32(rhs)) ? 1u : 0u;
-#else
-         softfloat_disabled("f32.lt");
-#endif
-      }
-
-      /// Implements f32 greater-than with raw softfloat bit arguments.
-      static uint32_t soft_f32_gt(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return raw_f32_is_nan(lhs) || raw_f32_is_nan(rhs) ? 0u
-                                                           : (!::f32_le(to_raw_f32(lhs), to_raw_f32(rhs)) ? 1u : 0u);
-#else
-         softfloat_disabled("f32.gt");
-#endif
-      }
-
-      /// Implements f32 less-than-or-equal with raw softfloat bit arguments.
-      static uint32_t soft_f32_le(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_le(to_raw_f32(lhs), to_raw_f32(rhs)) ? 1u : 0u;
-#else
-         softfloat_disabled("f32.le");
-#endif
-      }
-
-      /// Implements f32 greater-than-or-equal with raw softfloat bit arguments.
-      static uint32_t soft_f32_ge(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return raw_f32_is_nan(lhs) || raw_f32_is_nan(rhs) ? 0u
-                                                           : (!::f32_lt(to_raw_f32(lhs), to_raw_f32(rhs)) ? 1u : 0u);
-#else
-         softfloat_disabled("f32.ge");
-#endif
-      }
-
-      /// Implements f64 equality with raw softfloat bit arguments.
-      static uint32_t soft_f64_eq(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_eq(to_raw_f64(lhs), to_raw_f64(rhs)) ? 1u : 0u;
-#else
-         softfloat_disabled("f64.eq");
-#endif
-      }
-
-      /// Implements f64 inequality with raw softfloat bit arguments.
-      static uint32_t soft_f64_ne(uint64_t lhs, uint64_t rhs) { return soft_f64_eq(lhs, rhs) ? 0u : 1u; }
-
-      /// Implements f64 less-than with raw softfloat bit arguments.
-      static uint32_t soft_f64_lt(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_lt(to_raw_f64(lhs), to_raw_f64(rhs)) ? 1u : 0u;
-#else
-         softfloat_disabled("f64.lt");
-#endif
-      }
-
-      /// Implements f64 greater-than with raw softfloat bit arguments.
-      static uint32_t soft_f64_gt(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return raw_f64_is_nan(lhs) || raw_f64_is_nan(rhs) ? 0u
-                                                           : (!::f64_le(to_raw_f64(lhs), to_raw_f64(rhs)) ? 1u : 0u);
-#else
-         softfloat_disabled("f64.gt");
-#endif
-      }
-
-      /// Implements f64 less-than-or-equal with raw softfloat bit arguments.
-      static uint32_t soft_f64_le(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_le(to_raw_f64(lhs), to_raw_f64(rhs)) ? 1u : 0u;
-#else
-         softfloat_disabled("f64.le");
-#endif
-      }
-
-      /// Implements f64 greater-than-or-equal with raw softfloat bit arguments.
-      static uint32_t soft_f64_ge(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return raw_f64_is_nan(lhs) || raw_f64_is_nan(rhs) ? 0u
-                                                           : (!::f64_lt(to_raw_f64(lhs), to_raw_f64(rhs)) ? 1u : 0u);
-#else
-         softfloat_disabled("f64.ge");
-#endif
-      }
-
-      /// Implements f32 absolute value using raw bits.
-      static uint32_t soft_f32_abs(uint32_t value) { return value & f32_abs_mask_bits; }
-
-      /// Implements f32 negation using raw bits.
-      static uint32_t soft_f32_neg(uint32_t value) { return value ^ f32_sign_mask_bits; }
-
-      /// Implements f32 addition using softfloat.
+      static uint32_t soft_f32_abs(uint32_t value) { return f32_to_bits(_sysio_f32_abs(bits_to_f32(value))); }
+      static uint32_t soft_f32_neg(uint32_t value) { return f32_to_bits(_sysio_f32_neg(bits_to_f32(value))); }
       static uint32_t soft_f32_add(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_add(to_raw_f32(lhs), to_raw_f32(rhs)).v;
-#else
-         softfloat_disabled("f32.add");
-#endif
+         return f32_to_bits(_sysio_f32_add(bits_to_f32(lhs), bits_to_f32(rhs)));
       }
-
-      /// Implements f32 subtraction using softfloat.
       static uint32_t soft_f32_sub(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_sub(to_raw_f32(lhs), to_raw_f32(rhs)).v;
-#else
-         softfloat_disabled("f32.sub");
-#endif
+         return f32_to_bits(_sysio_f32_sub(bits_to_f32(lhs), bits_to_f32(rhs)));
       }
-
-      /// Implements f32 multiplication using softfloat.
       static uint32_t soft_f32_mul(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_mul(to_raw_f32(lhs), to_raw_f32(rhs)).v;
-#else
-         softfloat_disabled("f32.mul");
-#endif
+         return f32_to_bits(_sysio_f32_mul(bits_to_f32(lhs), bits_to_f32(rhs)));
       }
-
-      /// Implements f32 division using softfloat.
       static uint32_t soft_f32_div(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_div(to_raw_f32(lhs), to_raw_f32(rhs)).v;
-#else
-         softfloat_disabled("f32.div");
-#endif
+         return f32_to_bits(_sysio_f32_div(bits_to_f32(lhs), bits_to_f32(rhs)));
       }
-
-      /// Implements f32 minimum using WASM's softfloat NaN and signed-zero rules.
       static uint32_t soft_f32_min(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         if (raw_f32_is_nan(lhs)) {
-            return lhs;
-         }
-         if (raw_f32_is_nan(rhs)) {
-            return rhs;
-         }
-         if ((lhs & f32_sign_mask_bits) != (rhs & f32_sign_mask_bits)) {
-            return (lhs & f32_sign_mask_bits) ? lhs : rhs;
-         }
-         return ::f32_lt(to_raw_f32(lhs), to_raw_f32(rhs)) ? lhs : rhs;
-#else
-         softfloat_disabled("f32.min");
-#endif
+         return f32_to_bits(_sysio_f32_min(bits_to_f32(lhs), bits_to_f32(rhs)));
       }
-
-      /// Implements f32 maximum using WASM's softfloat NaN and signed-zero rules.
       static uint32_t soft_f32_max(uint32_t lhs, uint32_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         if (raw_f32_is_nan(lhs)) {
-            return lhs;
-         }
-         if (raw_f32_is_nan(rhs)) {
-            return rhs;
-         }
-         if ((lhs & f32_sign_mask_bits) != (rhs & f32_sign_mask_bits)) {
-            return (lhs & f32_sign_mask_bits) ? rhs : lhs;
-         }
-         return ::f32_lt(to_raw_f32(lhs), to_raw_f32(rhs)) ? rhs : lhs;
-#else
-         softfloat_disabled("f32.max");
-#endif
+         return f32_to_bits(_sysio_f32_max(bits_to_f32(lhs), bits_to_f32(rhs)));
       }
-
-      /// Implements f32 copysign using raw bits.
       static uint32_t soft_f32_copysign(uint32_t lhs, uint32_t rhs) {
-         return (lhs & f32_abs_mask_bits) | (rhs & f32_sign_mask_bits);
+         return f32_to_bits(_sysio_f32_copysign(bits_to_f32(lhs), bits_to_f32(rhs)));
       }
+      static uint32_t soft_f32_sqrt(uint32_t value) { return f32_to_bits(_sysio_f32_sqrt(bits_to_f32(value))); }
+      static uint32_t soft_f32_ceil(uint32_t bits) { return f32_to_bits(_sysio_f32_ceil(bits_to_f32(bits))); }
+      static uint32_t soft_f32_floor(uint32_t bits) { return f32_to_bits(_sysio_f32_floor(bits_to_f32(bits))); }
+      static uint32_t soft_f32_trunc(uint32_t bits) { return f32_to_bits(_sysio_f32_trunc(bits_to_f32(bits))); }
+      static uint32_t soft_f32_nearest(uint32_t bits) { return f32_to_bits(_sysio_f32_nearest(bits_to_f32(bits))); }
 
-      /// Implements f32 square root using softfloat.
-      static uint32_t soft_f32_sqrt(uint32_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_sqrt(to_raw_f32(value)).v;
-#else
-         softfloat_disabled("f32.sqrt");
-#endif
-      }
-
-      /// Implements f64 absolute value using raw bits.
-      static uint64_t soft_f64_abs(uint64_t value) { return value & f64_abs_mask_bits; }
-
-      /// Implements f64 negation using raw bits.
-      static uint64_t soft_f64_neg(uint64_t value) { return value ^ f64_sign_mask_bits; }
-
-      /// Implements f64 addition using softfloat.
+      static uint64_t soft_f64_abs(uint64_t value) { return f64_to_bits(_sysio_f64_abs(bits_to_f64(value))); }
+      static uint64_t soft_f64_neg(uint64_t value) { return f64_to_bits(_sysio_f64_neg(bits_to_f64(value))); }
       static uint64_t soft_f64_add(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_add(to_raw_f64(lhs), to_raw_f64(rhs)).v;
-#else
-         softfloat_disabled("f64.add");
-#endif
+         return f64_to_bits(_sysio_f64_add(bits_to_f64(lhs), bits_to_f64(rhs)));
       }
-
-      /// Implements f64 subtraction using softfloat.
       static uint64_t soft_f64_sub(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_sub(to_raw_f64(lhs), to_raw_f64(rhs)).v;
-#else
-         softfloat_disabled("f64.sub");
-#endif
+         return f64_to_bits(_sysio_f64_sub(bits_to_f64(lhs), bits_to_f64(rhs)));
       }
-
-      /// Implements f64 multiplication using softfloat.
       static uint64_t soft_f64_mul(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_mul(to_raw_f64(lhs), to_raw_f64(rhs)).v;
-#else
-         softfloat_disabled("f64.mul");
-#endif
+         return f64_to_bits(_sysio_f64_mul(bits_to_f64(lhs), bits_to_f64(rhs)));
       }
-
-      /// Implements f64 division using softfloat.
       static uint64_t soft_f64_div(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_div(to_raw_f64(lhs), to_raw_f64(rhs)).v;
-#else
-         softfloat_disabled("f64.div");
-#endif
+         return f64_to_bits(_sysio_f64_div(bits_to_f64(lhs), bits_to_f64(rhs)));
       }
-
-      /// Implements f64 minimum using WASM's softfloat NaN and signed-zero rules.
       static uint64_t soft_f64_min(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         if (raw_f64_is_nan(lhs)) {
-            return lhs;
-         }
-         if (raw_f64_is_nan(rhs)) {
-            return rhs;
-         }
-         if ((lhs & f64_sign_mask_bits) != (rhs & f64_sign_mask_bits)) {
-            return (lhs & f64_sign_mask_bits) ? lhs : rhs;
-         }
-         return ::f64_lt(to_raw_f64(lhs), to_raw_f64(rhs)) ? lhs : rhs;
-#else
-         softfloat_disabled("f64.min");
-#endif
+         return f64_to_bits(_sysio_f64_min(bits_to_f64(lhs), bits_to_f64(rhs)));
       }
-
-      /// Implements f64 maximum using WASM's softfloat NaN and signed-zero rules.
       static uint64_t soft_f64_max(uint64_t lhs, uint64_t rhs) {
-#ifdef SYS_VM_SOFTFLOAT
-         if (raw_f64_is_nan(lhs)) {
-            return lhs;
-         }
-         if (raw_f64_is_nan(rhs)) {
-            return rhs;
-         }
-         if ((lhs & f64_sign_mask_bits) != (rhs & f64_sign_mask_bits)) {
-            return (lhs & f64_sign_mask_bits) ? rhs : lhs;
-         }
-         return ::f64_lt(to_raw_f64(lhs), to_raw_f64(rhs)) ? rhs : lhs;
-#else
-         softfloat_disabled("f64.max");
-#endif
+         return f64_to_bits(_sysio_f64_max(bits_to_f64(lhs), bits_to_f64(rhs)));
       }
-
-      /// Implements f64 copysign using raw bits.
       static uint64_t soft_f64_copysign(uint64_t lhs, uint64_t rhs) {
-         return (lhs & f64_abs_mask_bits) | (rhs & f64_sign_mask_bits);
+         return f64_to_bits(_sysio_f64_copysign(bits_to_f64(lhs), bits_to_f64(rhs)));
       }
+      static uint64_t soft_f64_sqrt(uint64_t value) { return f64_to_bits(_sysio_f64_sqrt(bits_to_f64(value))); }
+      static uint64_t soft_f64_ceil(uint64_t bits) { return f64_to_bits(_sysio_f64_ceil(bits_to_f64(bits))); }
+      static uint64_t soft_f64_floor(uint64_t bits) { return f64_to_bits(_sysio_f64_floor(bits_to_f64(bits))); }
+      static uint64_t soft_f64_trunc(uint64_t bits) { return f64_to_bits(_sysio_f64_trunc(bits_to_f64(bits))); }
+      static uint64_t soft_f64_nearest(uint64_t bits) { return f64_to_bits(_sysio_f64_nearest(bits_to_f64(bits))); }
 
-      /// Implements f64 square root using softfloat.
-      static uint64_t soft_f64_sqrt(uint64_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_sqrt(to_raw_f64(value)).v;
-#else
-         softfloat_disabled("f64.sqrt");
-#endif
-      }
-
-      /// Implements f32 ceil using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint32_t soft_f32_ceil(uint32_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto      a        = to_raw_f32(bits);
-         const int exponent = static_cast<int>((a.v >> 23) & 0xffu) - 0x7f;
-         if (exponent >= 23) {
-            return bits;
-         }
-         if (exponent >= 0) {
-            const uint32_t mask = 0x007fffffu >> exponent;
-            if ((a.v & mask) == 0) {
-               return bits;
-            }
-            if ((a.v & f32_sign_mask_bits) == 0) {
-               a.v += mask;
-            }
-            a.v &= ~mask;
-         } else {
-            if (a.v & f32_sign_mask_bits) {
-               a.v = f32_sign_mask_bits;
-            } else if (a.v << 1u) {
-               a.v = f32_one_bits;
-            }
-         }
-         return a.v;
-#else
-         softfloat_disabled("f32.ceil");
-#endif
-      }
-
-      /// Implements f32 floor using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint32_t soft_f32_floor(uint32_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto      a        = to_raw_f32(bits);
-         const int exponent = static_cast<int>((a.v >> 23) & 0xffu) - 0x7f;
-         if (exponent >= 23) {
-            return bits;
-         }
-         if (exponent >= 0) {
-            const uint32_t mask = 0x007fffffu >> exponent;
-            if ((a.v & mask) == 0) {
-               return bits;
-            }
-            if (a.v & f32_sign_mask_bits) {
-               a.v += mask;
-            }
-            a.v &= ~mask;
-         } else {
-            if ((a.v & f32_sign_mask_bits) == 0) {
-               a.v = 0;
-            } else if (a.v << 1u) {
-               a.v = f32_neg_one_bits;
-            }
-         }
-         return a.v;
-#else
-         softfloat_disabled("f32.floor");
-#endif
-      }
-
-      /// Implements f32 trunc using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint32_t soft_f32_trunc(uint32_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto a        = to_raw_f32(bits);
-         int  exponent = static_cast<int>((a.v >> 23) & 0xffu) - 0x7f + 9;
-         if (exponent >= 32) {
-            return bits;
-         }
-         if (exponent < 9) {
-            exponent = 1;
-         }
-         const uint32_t mask = ~uint32_t{ 0 } >> exponent;
-         if ((a.v & mask) == 0) {
-            return bits;
-         }
-         a.v &= ~mask;
-         return a.v;
-#else
-         softfloat_disabled("f32.trunc");
-#endif
-      }
-
-      /// Implements f32 nearest using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint32_t soft_f32_nearest(uint32_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto          a        = to_raw_f32(bits);
-         const int     exponent = static_cast<int>((a.v >> 23) & 0xffu);
-         const bool    sign     = (a.v & f32_sign_mask_bits) != 0;
-         softfloat32_t rounded;
-         if (exponent >= 0x7f + 23) {
-            return bits;
-         }
-         if (sign) {
-            rounded = ::f32_add(::f32_sub(a, softfloat32_t{ inv_float_eps }), softfloat32_t{ inv_float_eps });
-         } else {
-            rounded = ::f32_sub(::f32_add(a, softfloat32_t{ inv_float_eps }), softfloat32_t{ inv_float_eps });
-         }
-         if (::f32_eq(rounded, softfloat32_t{ 0 })) {
-            return sign ? f32_sign_mask_bits : 0u;
-         }
-         return rounded.v;
-#else
-         softfloat_disabled("f32.nearest");
-#endif
-      }
-
-      /// Implements f64 ceil using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint64_t soft_f64_ceil(uint64_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto      a        = to_raw_f64(bits);
-         const int exponent = static_cast<int>((a.v >> 52) & 0x7ffu);
-         if (exponent >= 0x3ff + 52 || ::f64_eq(a, softfloat64_t{ 0 })) {
-            return bits;
-         }
-         softfloat64_t delta;
-         if (a.v & f64_sign_mask_bits) {
-            delta = ::f64_sub(::f64_add(::f64_sub(a, softfloat64_t{ inv_double_eps }), softfloat64_t{ inv_double_eps }),
-                              a);
-         } else {
-            delta = ::f64_sub(::f64_sub(::f64_add(a, softfloat64_t{ inv_double_eps }), softfloat64_t{ inv_double_eps }),
-                              a);
-         }
-         if (exponent <= 0x3ff - 1) {
-            return (a.v & f64_sign_mask_bits) ? f64_sign_mask_bits : f64_one_bits;
-         }
-         if (::f64_lt(delta, softfloat64_t{ 0 })) {
-            return ::f64_add(::f64_add(a, delta), softfloat64_t{ f64_one_bits }).v;
-         }
-         return ::f64_add(a, delta).v;
-#else
-         softfloat_disabled("f64.ceil");
-#endif
-      }
-
-      /// Implements f64 floor using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint64_t soft_f64_floor(uint64_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto      a        = to_raw_f64(bits);
-         const int exponent = static_cast<int>((a.v >> 52) & 0x7ffu);
-         if (a.v == f64_sign_mask_bits || exponent >= 0x3ff + 52 || a.v == 0) {
-            return bits;
-         }
-         softfloat64_t delta;
-         if (a.v & f64_sign_mask_bits) {
-            delta = ::f64_sub(::f64_add(::f64_sub(a, softfloat64_t{ inv_double_eps }), softfloat64_t{ inv_double_eps }),
-                              a);
-         } else {
-            delta = ::f64_sub(::f64_sub(::f64_add(a, softfloat64_t{ inv_double_eps }), softfloat64_t{ inv_double_eps }),
-                              a);
-         }
-         if (exponent <= 0x3ff - 1) {
-            return (a.v & f64_sign_mask_bits) ? f64_neg_one_bits : 0u;
-         }
-         if (!::f64_le(delta, softfloat64_t{ 0 })) {
-            return ::f64_sub(::f64_add(a, delta), softfloat64_t{ f64_one_bits }).v;
-         }
-         return ::f64_add(a, delta).v;
-#else
-         softfloat_disabled("f64.floor");
-#endif
-      }
-
-      /// Implements f64 trunc using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint64_t soft_f64_trunc(uint64_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto a        = to_raw_f64(bits);
-         int  exponent = static_cast<int>((a.v >> 52) & 0x7ffu) - 0x3ff + 12;
-         if (exponent >= 64) {
-            return bits;
-         }
-         if (exponent < 12) {
-            exponent = 1;
-         }
-         const uint64_t mask = ~uint64_t{ 0 } >> exponent;
-         if ((a.v & mask) == 0) {
-            return bits;
-         }
-         a.v &= ~mask;
-         return a.v;
-#else
-         softfloat_disabled("f64.trunc");
-#endif
-      }
-
-      /// Implements f64 nearest using the same raw-bit algorithm as the interpreter softfloat path.
-      static uint64_t soft_f64_nearest(uint64_t bits) {
-#ifdef SYS_VM_SOFTFLOAT
-         auto          a        = to_raw_f64(bits);
-         const int     exponent = static_cast<int>((a.v >> 52) & 0x7ffu);
-         const bool    sign     = (a.v & f64_sign_mask_bits) != 0;
-         softfloat64_t rounded;
-         if (exponent >= 0x3ff + 52) {
-            return bits;
-         }
-         if (sign) {
-            rounded = ::f64_add(::f64_sub(a, softfloat64_t{ inv_double_eps }), softfloat64_t{ inv_double_eps });
-         } else {
-            rounded = ::f64_sub(::f64_add(a, softfloat64_t{ inv_double_eps }), softfloat64_t{ inv_double_eps });
-         }
-         if (::f64_eq(rounded, softfloat64_t{ 0 })) {
-            return sign ? f64_sign_mask_bits : 0ull;
-         }
-         return rounded.v;
-#else
-         softfloat_disabled("f64.nearest");
-#endif
-      }
-
-      // The historical exception text says "convert" for these truncation traps. Keep it aligned
-      // with softfloat.hpp so AArch64 JIT and interpreter failures remain observable-compatible.
-      /// Implements i32.trunc_s_f32 using softfloat with WASM trap checks.
       static uint32_t soft_f32_trunc_i32s(uint32_t bits) {
-         return trap_softfloat<uint32_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f32_ge(bits, f32_pos_i32_limit) || soft_f32_lt(bits, f32_neg_i32_limit)),
-                          wasm_interpreter_exception, "Error, f32.convert_s/i32 overflow");
-            SYS_VM_ASSERT(!raw_f32_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f32.convert_s/i32 unrepresentable");
-            return static_cast<uint32_t>(::f32_to_i32(to_raw_f32(soft_f32_trunc(bits)), 0, false));
-#else
-            softfloat_disabled("i32.trunc_s_f32");
-#endif
-         });
+         return trap_softfloat<uint32_t>([&]() { return static_cast<uint32_t>(_sysio_f32_trunc_i32s(bits_to_f32(bits))); });
       }
-
-      /// Implements i32.trunc_u_f32 using softfloat with WASM trap checks.
       static uint32_t soft_f32_trunc_i32u(uint32_t bits) {
-         return trap_softfloat<uint32_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f32_ge(bits, f32_pos_u32_limit) || soft_f32_le(bits, f32_neg_one_bits)),
-                          wasm_interpreter_exception, "Error, f32.convert_u/i32 overflow");
-            SYS_VM_ASSERT(!raw_f32_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f32.convert_u/i32 unrepresentable");
-            return ::f32_to_ui32(to_raw_f32(soft_f32_trunc(bits)), 0, false);
-#else
-            softfloat_disabled("i32.trunc_u_f32");
-#endif
-         });
+         return trap_softfloat<uint32_t>([&]() { return _sysio_f32_trunc_i32u(bits_to_f32(bits)); });
       }
-
-      /// Implements i32.trunc_s_f64 using softfloat with WASM trap checks.
       static uint32_t soft_f64_trunc_i32s(uint64_t bits) {
-         return trap_softfloat<uint32_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f64_ge(bits, f64_pos_i32_limit) || soft_f64_lt(bits, f64_neg_i32_limit)),
-                          wasm_interpreter_exception, "Error, f64.convert_s/i32 overflow");
-            SYS_VM_ASSERT(!raw_f64_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f64.convert_s/i32 unrepresentable");
-            return static_cast<uint32_t>(::f64_to_i32(to_raw_f64(soft_f64_trunc(bits)), 0, false));
-#else
-            softfloat_disabled("i32.trunc_s_f64");
-#endif
-         });
+         return trap_softfloat<uint32_t>([&]() { return static_cast<uint32_t>(_sysio_f64_trunc_i32s(bits_to_f64(bits))); });
       }
-
-      /// Implements i32.trunc_u_f64 using softfloat with WASM trap checks.
       static uint32_t soft_f64_trunc_i32u(uint64_t bits) {
-         return trap_softfloat<uint32_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f64_ge(bits, f64_pos_u32_limit) || soft_f64_le(bits, f64_neg_one_bits)),
-                          wasm_interpreter_exception, "Error, f64.convert_u/i32 overflow");
-            SYS_VM_ASSERT(!raw_f64_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f64.convert_u/i32 unrepresentable");
-            return ::f64_to_ui32(to_raw_f64(soft_f64_trunc(bits)), 0, false);
-#else
-            softfloat_disabled("i32.trunc_u_f64");
-#endif
-         });
+         return trap_softfloat<uint32_t>([&]() { return _sysio_f64_trunc_i32u(bits_to_f64(bits)); });
       }
-
-      /// Implements i64.trunc_s_f32 using softfloat with WASM trap checks.
       static uint64_t soft_f32_trunc_i64s(uint32_t bits) {
-         return trap_softfloat<uint64_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f32_ge(bits, f32_pos_i64_limit) || soft_f32_lt(bits, f32_neg_i64_limit)),
-                          wasm_interpreter_exception, "Error, f32.convert_s/i64 overflow");
-            SYS_VM_ASSERT(!raw_f32_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f32.convert_s/i64 unrepresentable");
-            return static_cast<uint64_t>(::f32_to_i64(to_raw_f32(soft_f32_trunc(bits)), 0, false));
-#else
-            softfloat_disabled("i64.trunc_s_f32");
-#endif
-         });
+         return trap_softfloat<uint64_t>([&]() { return static_cast<uint64_t>(_sysio_f32_trunc_i64s(bits_to_f32(bits))); });
       }
-
-      /// Implements i64.trunc_u_f32 using softfloat with WASM trap checks.
       static uint64_t soft_f32_trunc_i64u(uint32_t bits) {
-         return trap_softfloat<uint64_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f32_ge(bits, f32_pos_u64_limit) || soft_f32_le(bits, f32_neg_one_bits)),
-                          wasm_interpreter_exception, "Error, f32.convert_u/i64 overflow");
-            SYS_VM_ASSERT(!raw_f32_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f32.convert_u/i64 unrepresentable");
-            return ::f32_to_ui64(to_raw_f32(soft_f32_trunc(bits)), 0, false);
-#else
-            softfloat_disabled("i64.trunc_u_f32");
-#endif
-         });
+         return trap_softfloat<uint64_t>([&]() { return _sysio_f32_trunc_i64u(bits_to_f32(bits)); });
       }
-
-      /// Implements i64.trunc_s_f64 using softfloat with WASM trap checks.
       static uint64_t soft_f64_trunc_i64s(uint64_t bits) {
-         return trap_softfloat<uint64_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f64_ge(bits, f64_pos_i64_limit) || soft_f64_lt(bits, f64_neg_i64_limit)),
-                          wasm_interpreter_exception, "Error, f64.convert_s/i64 overflow");
-            SYS_VM_ASSERT(!raw_f64_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f64.convert_s/i64 unrepresentable");
-            return static_cast<uint64_t>(::f64_to_i64(to_raw_f64(soft_f64_trunc(bits)), 0, false));
-#else
-            softfloat_disabled("i64.trunc_s_f64");
-#endif
-         });
+         return trap_softfloat<uint64_t>([&]() { return static_cast<uint64_t>(_sysio_f64_trunc_i64s(bits_to_f64(bits))); });
       }
-
-      /// Implements i64.trunc_u_f64 using softfloat with WASM trap checks.
       static uint64_t soft_f64_trunc_i64u(uint64_t bits) {
-         return trap_softfloat<uint64_t>([&]() {
-#ifdef SYS_VM_SOFTFLOAT
-            SYS_VM_ASSERT(!(soft_f64_ge(bits, f64_pos_u64_limit) || soft_f64_le(bits, f64_neg_one_bits)),
-                          wasm_interpreter_exception, "Error, f64.convert_u/i64 overflow");
-            SYS_VM_ASSERT(!raw_f64_is_nan(bits), wasm_interpreter_exception,
-                          "Error, f64.convert_u/i64 unrepresentable");
-            return ::f64_to_ui64(to_raw_f64(soft_f64_trunc(bits)), 0, false);
-#else
-            softfloat_disabled("i64.trunc_u_f64");
-#endif
-         });
+         return trap_softfloat<uint64_t>([&]() { return _sysio_f64_trunc_i64u(bits_to_f64(bits)); });
       }
 
-      /// Implements f32.convert_s_i32 using softfloat.
-      static uint32_t soft_i32_to_f32(uint32_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::i32_to_f32(static_cast<int32_t>(value)).v;
+      static uint32_t soft_i32_to_f32(uint32_t value) { return f32_to_bits(_sysio_i32_to_f32(static_cast<int32_t>(value))); }
+      static uint32_t soft_ui32_to_f32(uint32_t value) { return f32_to_bits(_sysio_ui32_to_f32(value)); }
+      static uint32_t soft_i64_to_f32(uint64_t value) { return f32_to_bits(_sysio_i64_to_f32(static_cast<int64_t>(value))); }
+      static uint32_t soft_ui64_to_f32(uint64_t value) { return f32_to_bits(_sysio_ui64_to_f32(value)); }
+      static uint32_t soft_f64_demote_f32(uint64_t value) { return f32_to_bits(_sysio_f64_demote(bits_to_f64(value))); }
+      static uint64_t soft_i32_to_f64(uint32_t value) { return f64_to_bits(_sysio_i32_to_f64(static_cast<int32_t>(value))); }
+      static uint64_t soft_ui32_to_f64(uint32_t value) { return f64_to_bits(_sysio_ui32_to_f64(value)); }
+      static uint64_t soft_i64_to_f64(uint64_t value) { return f64_to_bits(_sysio_i64_to_f64(static_cast<int64_t>(value))); }
+      static uint64_t soft_ui64_to_f64(uint64_t value) { return f64_to_bits(_sysio_ui64_to_f64(value)); }
+      static uint64_t soft_f32_promote_f64(uint32_t value) { return f64_to_bits(_sysio_f32_promote(bits_to_f32(value))); }
 #else
-         softfloat_disabled("f32.convert_s_i32");
-#endif
+      static uint32_t soft_f32_eq(uint32_t, uint32_t) { softfloat_disabled("f32.eq"); }
+      static uint32_t soft_f32_ne(uint32_t, uint32_t) { softfloat_disabled("f32.ne"); }
+      static uint32_t soft_f32_lt(uint32_t, uint32_t) { softfloat_disabled("f32.lt"); }
+      static uint32_t soft_f32_gt(uint32_t, uint32_t) { softfloat_disabled("f32.gt"); }
+      static uint32_t soft_f32_le(uint32_t, uint32_t) { softfloat_disabled("f32.le"); }
+      static uint32_t soft_f32_ge(uint32_t, uint32_t) { softfloat_disabled("f32.ge"); }
+      static uint32_t soft_f64_eq(uint64_t, uint64_t) { softfloat_disabled("f64.eq"); }
+      static uint32_t soft_f64_ne(uint64_t, uint64_t) { softfloat_disabled("f64.ne"); }
+      static uint32_t soft_f64_lt(uint64_t, uint64_t) { softfloat_disabled("f64.lt"); }
+      static uint32_t soft_f64_gt(uint64_t, uint64_t) { softfloat_disabled("f64.gt"); }
+      static uint32_t soft_f64_le(uint64_t, uint64_t) { softfloat_disabled("f64.le"); }
+      static uint32_t soft_f64_ge(uint64_t, uint64_t) { softfloat_disabled("f64.ge"); }
+
+      static uint32_t soft_f32_abs(uint32_t) { softfloat_disabled("f32.abs"); }
+      static uint32_t soft_f32_neg(uint32_t) { softfloat_disabled("f32.neg"); }
+      static uint32_t soft_f32_add(uint32_t, uint32_t) { softfloat_disabled("f32.add"); }
+      static uint32_t soft_f32_sub(uint32_t, uint32_t) { softfloat_disabled("f32.sub"); }
+      static uint32_t soft_f32_mul(uint32_t, uint32_t) { softfloat_disabled("f32.mul"); }
+      static uint32_t soft_f32_div(uint32_t, uint32_t) { softfloat_disabled("f32.div"); }
+      static uint32_t soft_f32_min(uint32_t, uint32_t) { softfloat_disabled("f32.min"); }
+      static uint32_t soft_f32_max(uint32_t, uint32_t) { softfloat_disabled("f32.max"); }
+      static uint32_t soft_f32_copysign(uint32_t, uint32_t) { softfloat_disabled("f32.copysign"); }
+      static uint32_t soft_f32_sqrt(uint32_t) { softfloat_disabled("f32.sqrt"); }
+      static uint32_t soft_f32_ceil(uint32_t) { softfloat_disabled("f32.ceil"); }
+      static uint32_t soft_f32_floor(uint32_t) { softfloat_disabled("f32.floor"); }
+      static uint32_t soft_f32_trunc(uint32_t) { softfloat_disabled("f32.trunc"); }
+      static uint32_t soft_f32_nearest(uint32_t) { softfloat_disabled("f32.nearest"); }
+
+      static uint64_t soft_f64_abs(uint64_t) { softfloat_disabled("f64.abs"); }
+      static uint64_t soft_f64_neg(uint64_t) { softfloat_disabled("f64.neg"); }
+      static uint64_t soft_f64_add(uint64_t, uint64_t) { softfloat_disabled("f64.add"); }
+      static uint64_t soft_f64_sub(uint64_t, uint64_t) { softfloat_disabled("f64.sub"); }
+      static uint64_t soft_f64_mul(uint64_t, uint64_t) { softfloat_disabled("f64.mul"); }
+      static uint64_t soft_f64_div(uint64_t, uint64_t) { softfloat_disabled("f64.div"); }
+      static uint64_t soft_f64_min(uint64_t, uint64_t) { softfloat_disabled("f64.min"); }
+      static uint64_t soft_f64_max(uint64_t, uint64_t) { softfloat_disabled("f64.max"); }
+      static uint64_t soft_f64_copysign(uint64_t, uint64_t) { softfloat_disabled("f64.copysign"); }
+      static uint64_t soft_f64_sqrt(uint64_t) { softfloat_disabled("f64.sqrt"); }
+      static uint64_t soft_f64_ceil(uint64_t) { softfloat_disabled("f64.ceil"); }
+      static uint64_t soft_f64_floor(uint64_t) { softfloat_disabled("f64.floor"); }
+      static uint64_t soft_f64_trunc(uint64_t) { softfloat_disabled("f64.trunc"); }
+      static uint64_t soft_f64_nearest(uint64_t) { softfloat_disabled("f64.nearest"); }
+
+      static uint32_t soft_f32_trunc_i32s(uint32_t) {
+         return trap_softfloat<uint32_t>([&]() -> uint32_t { softfloat_disabled("i32.trunc_s_f32"); });
+      }
+      static uint32_t soft_f32_trunc_i32u(uint32_t) {
+         return trap_softfloat<uint32_t>([&]() -> uint32_t { softfloat_disabled("i32.trunc_u_f32"); });
+      }
+      static uint32_t soft_f64_trunc_i32s(uint64_t) {
+         return trap_softfloat<uint32_t>([&]() -> uint32_t { softfloat_disabled("i32.trunc_s_f64"); });
+      }
+      static uint32_t soft_f64_trunc_i32u(uint64_t) {
+         return trap_softfloat<uint32_t>([&]() -> uint32_t { softfloat_disabled("i32.trunc_u_f64"); });
+      }
+      static uint64_t soft_f32_trunc_i64s(uint32_t) {
+         return trap_softfloat<uint64_t>([&]() -> uint64_t { softfloat_disabled("i64.trunc_s_f32"); });
+      }
+      static uint64_t soft_f32_trunc_i64u(uint32_t) {
+         return trap_softfloat<uint64_t>([&]() -> uint64_t { softfloat_disabled("i64.trunc_u_f32"); });
+      }
+      static uint64_t soft_f64_trunc_i64s(uint64_t) {
+         return trap_softfloat<uint64_t>([&]() -> uint64_t { softfloat_disabled("i64.trunc_s_f64"); });
+      }
+      static uint64_t soft_f64_trunc_i64u(uint64_t) {
+         return trap_softfloat<uint64_t>([&]() -> uint64_t { softfloat_disabled("i64.trunc_u_f64"); });
       }
 
-      /// Implements f32.convert_u_i32 using softfloat.
-      static uint32_t soft_ui32_to_f32(uint32_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::ui32_to_f32(value).v;
-#else
-         softfloat_disabled("f32.convert_u_i32");
+      static uint32_t soft_i32_to_f32(uint32_t) { softfloat_disabled("f32.convert_s_i32"); }
+      static uint32_t soft_ui32_to_f32(uint32_t) { softfloat_disabled("f32.convert_u_i32"); }
+      static uint32_t soft_i64_to_f32(uint64_t) { softfloat_disabled("f32.convert_s_i64"); }
+      static uint32_t soft_ui64_to_f32(uint64_t) { softfloat_disabled("f32.convert_u_i64"); }
+      static uint32_t soft_f64_demote_f32(uint64_t) { softfloat_disabled("f32.demote_f64"); }
+      static uint64_t soft_i32_to_f64(uint32_t) { softfloat_disabled("f64.convert_s_i32"); }
+      static uint64_t soft_ui32_to_f64(uint32_t) { softfloat_disabled("f64.convert_u_i32"); }
+      static uint64_t soft_i64_to_f64(uint64_t) { softfloat_disabled("f64.convert_s_i64"); }
+      static uint64_t soft_ui64_to_f64(uint64_t) { softfloat_disabled("f64.convert_u_i64"); }
+      static uint64_t soft_f32_promote_f64(uint32_t) { softfloat_disabled("f64.promote_f32"); }
 #endif
-      }
-
-      /// Implements f32.convert_s_i64 using softfloat.
-      static uint32_t soft_i64_to_f32(uint64_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::i64_to_f32(static_cast<int64_t>(value)).v;
-#else
-         softfloat_disabled("f32.convert_s_i64");
-#endif
-      }
-
-      /// Implements f32.convert_u_i64 using softfloat.
-      static uint32_t soft_ui64_to_f32(uint64_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::ui64_to_f32(value).v;
-#else
-         softfloat_disabled("f32.convert_u_i64");
-#endif
-      }
-
-      /// Implements f32.demote_f64 using softfloat.
-      static uint32_t soft_f64_demote_f32(uint64_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f64_to_f32(to_raw_f64(value)).v;
-#else
-         softfloat_disabled("f32.demote_f64");
-#endif
-      }
-
-      /// Implements f64.convert_s_i32 using softfloat.
-      static uint64_t soft_i32_to_f64(uint32_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::i32_to_f64(static_cast<int32_t>(value)).v;
-#else
-         softfloat_disabled("f64.convert_s_i32");
-#endif
-      }
-
-      /// Implements f64.convert_u_i32 using softfloat.
-      static uint64_t soft_ui32_to_f64(uint32_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::ui32_to_f64(value).v;
-#else
-         softfloat_disabled("f64.convert_u_i32");
-#endif
-      }
-
-      /// Implements f64.convert_s_i64 using softfloat.
-      static uint64_t soft_i64_to_f64(uint64_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::i64_to_f64(static_cast<int64_t>(value)).v;
-#else
-         softfloat_disabled("f64.convert_s_i64");
-#endif
-      }
-
-      /// Implements f64.convert_u_i64 using softfloat.
-      static uint64_t soft_ui64_to_f64(uint64_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::ui64_to_f64(value).v;
-#else
-         softfloat_disabled("f64.convert_u_i64");
-#endif
-      }
-
-      /// Implements f64.promote_f32 using softfloat.
-      static uint64_t soft_f32_promote_f64(uint32_t value) {
-#ifdef SYS_VM_SOFTFLOAT
-         return ::f32_to_f64(to_raw_f32(value)).v;
-#else
-         softfloat_disabled("f64.promote_f32");
-#endif
-      }
 
       /// Resolves and executes a checked call_indirect table entry.
       static native_value execute_call_indirect(Context* context, void* linear_memory, native_value* stack,
