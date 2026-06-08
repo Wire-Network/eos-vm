@@ -13,7 +13,7 @@
 #if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_X86_64
 #include <sysio/vm/x86_64.hpp>
 #endif
-#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
+#if SYS_VM_HAS_AARCH64_JIT_BACKEND
 #include <sysio/vm/aarch64.hpp>
 #endif
 
@@ -30,7 +30,7 @@
 namespace sysio { namespace vm {
 
    __attribute__((visibility("default")))
-   inline std::atomic<uint32_t> total_timed_run_in_progress{false};
+   inline std::atomic<uint32_t> total_timed_run_in_progress{0};
 
 #if SYS_VM_HAS_JIT_BACKEND
    /// Normal JIT backend capability advertised by the selected architecture.
@@ -329,39 +329,66 @@ namespace sysio { namespace vm {
 
       template<typename Watchdog, typename F>
       inline void timed_run(Watchdog&& wd, F&& f) {
-         if constexpr (sys_vm_target_aarch64) {
-            // AArch64 does not use process-wide code-page revocation for timed_run. The watchdog targets only the
-            // execution thread, and the signal handler consults this thread-local pointer before converting the
-            // signal into a timeout. This keeps unrelated execution threads from inheriting another run's timeout.
-            std::atomic<bool> timed_run_has_timed_out{false};
+         if constexpr (sys_vm_has_aarch64_jit_backend && Impl::is_jit) {
+            // The AArch64 JIT does not use process-wide code-page revocation for timed_run. The watchdog targets
+            // only the execution thread, and the signal handler consults this thread-local pointer before converting
+            // the signal into a timeout. This keeps unrelated execution threads from inheriting another run's timeout.
+            std::atomic<bool> local_timed_run_has_timed_out{false};
             std::atomic<bool>* const previous_timed_run_has_timed_out = active_timed_run_has_timed_out;
-            active_timed_run_has_timed_out = &timed_run_has_timed_out;
+            active_timed_run_has_timed_out = &local_timed_run_has_timed_out;
             auto restore_timeout_state = scope_guard{[previous_timed_run_has_timed_out]() {
                active_timed_run_has_timed_out = previous_timed_run_has_timed_out;
             }};
-            auto leave_timed_run = scope_guard{[this](){
-               --mod->allocator.timed_run_in_progress;
-            }};
             try {
-               ++mod->allocator.timed_run_in_progress;
-               pthread_t execution_thread = pthread_self();
-               auto wd_guard = std::forward<Watchdog>(wd).scoped_run([execution_thread,
-                                                                       &wd,
-                                                                       &timed_run_has_timed_out]() {
-                  timed_run_has_timed_out.store(true, std::memory_order_release);
-                  // Cooperative fork interruption can run through the same watchdog interface. Only the real
-                  // execution-deadline path should deliver the directed signal into the JIT execution thread.
-                  if (should_interrupt_execution_thread(wd, 0) && !pthread_equal(pthread_self(), execution_thread)) {
-                     pthread_kill(execution_thread, SIGSEGV);
+               const pthread_t execution_thread = pthread_self();
+               // Sample this policy before scoped_run starts so the watchdog thread does not read wd.
+               const bool interrupt_execution_thread = should_interrupt_execution_thread(wd, 0);
+               {
+                  sigset_t timeout_signal_mask;
+                  sigemptyset(&timeout_signal_mask);
+                  sigaddset(&timeout_signal_mask, SIGSEGV);
+                  sigset_t previous_signal_mask;
+                  bool timeout_signal_blocked = false;
+                  auto restore_timeout_signal_mask = scope_guard{[&]() {
+                     if (timeout_signal_blocked) {
+                        if (local_timed_run_has_timed_out.load(std::memory_order_acquire)) {
+                           sigset_t pending_signals;
+                           sigpending(&pending_signals);
+                           if (sigismember(&pending_signals, SIGSEGV)) {
+                              int drained_signal = 0;
+                              sigwait(&timeout_signal_mask, &drained_signal);
+                           }
+                        }
+                        pthread_sigmask(SIG_SETMASK, &previous_signal_mask, nullptr);
+                     }
+                  }};
+                  auto wd_guard = std::forward<Watchdog>(wd).scoped_run([execution_thread,
+                                                                          interrupt_execution_thread,
+                                                                          &local_timed_run_has_timed_out]() {
+                     local_timed_run_has_timed_out.store(true, std::memory_order_release);
+                     // Cooperative fork interruption can run through the same watchdog interface. Only the real
+                     // execution-deadline path should deliver the directed signal into the JIT execution thread.
+                     if (interrupt_execution_thread && !pthread_equal(pthread_self(), execution_thread)) {
+                        pthread_kill(execution_thread, SIGSEGV);
+                     }
+                  });
+                  if (local_timed_run_has_timed_out.load(std::memory_order_acquire))
+                     throw timeout_exception{ "execution timed out" };
+                  std::forward<F>(f)();
+                  // Keep late directed timeout SIGSEGVs pending while wd_guard joins, then drain one before
+                  // restoring the thread-local timeout state.
+                  if (interrupt_execution_thread) {
+                     pthread_sigmask(SIG_BLOCK, &timeout_signal_mask, &previous_signal_mask);
+                     timeout_signal_blocked = true;
                   }
-               });
-               if (timed_run_has_timed_out.load(std::memory_order_acquire))
+                  if (local_timed_run_has_timed_out.load(std::memory_order_acquire))
+                     throw timeout_exception{ "execution timed out" };
+               }
+               if (local_timed_run_has_timed_out.load(std::memory_order_acquire)) {
                   throw timeout_exception{ "execution timed out" };
-               std::forward<F>(f)();
-               if (timed_run_has_timed_out.load(std::memory_order_acquire))
-                  throw timeout_exception{ "execution timed out" };
+               }
             } catch(wasm_memory_exception&) {
-               if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
+               if (local_timed_run_has_timed_out.load(std::memory_order_acquire)) {
                   throw timeout_exception{ "execution timed out" };
                } else {
                   throw;

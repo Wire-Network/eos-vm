@@ -62,5 +62,5 @@ checksum=10039950000
 For this scalar loop benchmark, the AArch64 JIT is about 55.1x faster than the interpreter. This is
 a strong enough feasibility signal to keep the macOS arm64 JIT path in scope for developer builds.
 
-The benchmark does not prove block-production suitability. macOS builds remain developer-only, and
-the JIT should continue to use softfloat for floating-point behavior.
+The benchmark does not prove block-production suitability. macOS arm64 builds remain developer-only,
+and the JIT should continue to use softfloat for floating-point behavior.

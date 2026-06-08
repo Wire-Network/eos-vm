@@ -57,10 +57,10 @@ namespace sysio { namespace vm {
          // x86_64 uses shared code-page revocation for timeout interruption. The timeout state must be global
          // because any executing thread can fault after another watchdog disables executable pages.
          //
-         // AArch64 uses a directed signal instead. Its timeout state stays thread-local so one interrupted
+         // The AArch64 JIT uses a directed signal instead. Its timeout state stays thread-local so one interrupted
          // execution does not cause unrelated faults in another execution thread to be classified as timeouts.
          const bool execution_timed_out = [] {
-            if constexpr (sys_vm_target_aarch64) {
+            if constexpr (sys_vm_has_aarch64_jit_backend) {
                return active_timed_run_has_timed_out &&
                       active_timed_run_has_timed_out->load(std::memory_order_acquire);
             } else {
@@ -76,6 +76,18 @@ namespace sysio { namespace vm {
          siglongjmp(*dest, sig);
 
          //if dest not set, fall through and let chained handler an opportunity to handle
+      }
+
+      if constexpr (sys_vm_has_aarch64_jit_backend) {
+         // The AArch64 JIT timeout path interrupts the execution thread with a directed SIGSEGV instead of
+         // revoking code pages. If that signal arrives just after invoke_with_signal_handler has restored
+         // signal_dest, timed_run has already recorded the timeout and will throw after joining the watchdog.
+         // Chaining that late directed signal would terminate the process at the deadline boundary.
+         const bool directed_signal = !info || info->si_code <= 0;
+         if (sig == SIGSEGV && directed_signal && active_timed_run_has_timed_out &&
+             active_timed_run_has_timed_out->load(std::memory_order_acquire)) {
+            return;
+         }
       }
 
 chain_previous_handler:
@@ -168,7 +180,7 @@ chain_previous_handler:
 #endif
       install_signal_handler_once<SIGFPE>(sa);
       // Apple Silicon may deliver disabled-JIT-page instruction fetches as SIGILL.
-      if constexpr (sys_vm_target_aarch64) {
+      if constexpr (sys_vm_has_aarch64_jit_backend) {
          install_signal_handler_once<SIGILL>(sa);
       }
    }
@@ -212,7 +224,7 @@ chain_previous_handler:
          sigaddset(&unblock_mask, SIGSEGV);
          sigaddset(&unblock_mask, SIGBUS);
          sigaddset(&unblock_mask, SIGFPE);
-         if constexpr (sys_vm_target_aarch64) {
+         if constexpr (sys_vm_has_aarch64_jit_backend) {
             sigaddset(&unblock_mask, SIGILL);
          }
          sigaddset(&unblock_mask, SIGPROF);

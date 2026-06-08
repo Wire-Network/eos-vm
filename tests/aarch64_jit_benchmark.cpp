@@ -49,7 +49,7 @@ double benchmark_backend(Backend& backend, uint64_t& checksum) {
  * Runs an interpreter vs AArch64 JIT microbenchmark.
  */
 int main() {
-#if !SYS_VM_HAS_JIT_BACKEND || !SYS_VM_TARGET_ARM64
+#if !SYS_VM_HAS_AARCH64_JIT_BACKEND
    std::cerr << "AArch64 JIT is not enabled in this build.\n";
    return 1;
 #else

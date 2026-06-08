@@ -24,6 +24,13 @@ namespace sysio { namespace vm {
     * operations are routed through softfloat helpers that receive and return raw bit patterns.
     * Every unsupported opcode fails during parsing instead of silently falling back or producing
     * incomplete native code.
+    *
+    * This backend is enabled only for Apple AArch64 builds, which are developer-only. The
+    * relocation fixups below intentionally fail closed when generated code outgrows AArch64's
+    * immediate branch ranges: B/BL reach +/-128 MiB, while B.cond and CBZ/CBNZ reach +/-1 MiB.
+    * x86_64's rel32 branches do not have the same practical module-size limit, so any future
+    * consensus use of this backend must either preserve this documented acceptance difference or
+    * add long-branch lowering.
     */
    template <typename Context>
    class aarch64_machine_code_writer {
@@ -34,6 +41,7 @@ namespace sysio { namespace vm {
       struct branch_t {
          void*       address = nullptr;
          branch_kind kind    = branch_kind::b;
+         // For CBZ/CBNZ this is the tested register; for B.cond this is the condition code.
          uint32_t    reg     = 0;
       };
       using label_t = void*;
@@ -124,7 +132,7 @@ namespace sysio { namespace vm {
          }
 
          aarch64_machine_code_writer* _this       = nullptr;
-         uint32_t                               _case_index = 0;
+         uint32_t                      _case_index = 0;
       };
 
       /// Emits a br_table selector pop and returns the case parser.
@@ -1811,6 +1819,8 @@ namespace sysio { namespace vm {
 #endif
       }
 
+      // The historical exception text says "convert" for these truncation traps. Keep it aligned
+      // with softfloat.hpp so AArch64 JIT and interpreter failures remain observable-compatible.
       /// Implements i32.trunc_s_f32 using softfloat with WASM trap checks.
       static uint32_t soft_f32_trunc_i32s(uint32_t bits) {
          return trap_softfloat<uint32_t>([&]() {
@@ -2223,6 +2233,9 @@ namespace sysio { namespace vm {
       }
 
       /// Resolves an AArch64 CBZ/CBNZ relocation.
+      ///
+      /// CBZ/CBNZ use a 19-bit immediate scaled by 4, so large structured bodies may exceed the
+      /// +/-1 MiB reach that x86_64 conditional branches do not hit in practice.
       static void fix_cb(branch_t branch, void* target) {
          const auto* branch_addr = static_cast<const unsigned char*>(branch.address);
          const auto* target_addr = static_cast<const unsigned char*>(target);
@@ -2237,6 +2250,9 @@ namespace sysio { namespace vm {
       }
 
       /// Resolves an AArch64 B.cond relocation.
+      ///
+      /// B.cond has the same +/-1 MiB reach as CBZ/CBNZ. The current writer fails closed instead
+      /// of synthesizing an inverted short branch plus long unconditional branch.
       static void fix_b_cond(branch_t branch, void* target) {
          const auto* branch_addr = static_cast<const unsigned char*>(branch.address);
          const auto* target_addr = static_cast<const unsigned char*>(target);
@@ -2381,7 +2397,7 @@ namespace sysio { namespace vm {
          load_linear_memory();
       }
 
-      /// Emits a helper-backed integer unary operation.
+      /// Alias for helper-backed integer unary operations at integer opcode call sites.
       template <typename Function>
       void emit_integer_unop_helper(bool is_64_bit, Function helper) {
          emit_value_unop_helper(is_64_bit, helper);
@@ -2403,13 +2419,12 @@ namespace sysio { namespace vm {
 
       /// Emits a helper-backed floating-point comparison whose helper returns i32 0/1.
       template <typename Function>
-      void emit_float_compare(bool is_f64, Function helper) {
+      void emit_float_compare(bool /*is_f64*/, Function helper) {
          pop_x(scratch0);
          pop_x(scratch1);
          emit_mov_x_reg(0, scratch1);
          emit_mov_x_reg(1, scratch0);
          emit_call_helper(helper);
-         ignore_unused_variable_warning(is_f64);
          emit_zero_extend_w(return_reg);
          push_x(return_reg);
          load_context();

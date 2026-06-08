@@ -28,7 +28,7 @@ TEST_CASE("JIT capability flags match configured compile definitions", "[config]
    CHECK(sys_vm_target_aarch64);
 #endif
 
-#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
+#if SYS_VM_HAS_AARCH64_JIT_BACKEND
    CHECK(sys_vm_has_aarch64_jit_backend);
 #else
    CHECK_FALSE(sys_vm_has_aarch64_jit_backend);

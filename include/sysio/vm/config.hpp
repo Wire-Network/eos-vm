@@ -16,8 +16,23 @@
 #define SYS_VM_TARGET_ARM64 0
 #endif
 
-#if SYS_VM_HAS_JIT_BACKEND && !SYS_VM_TARGET_X86_64 && !SYS_VM_TARGET_ARM64
-#error "SYS_VM_HAS_JIT_BACKEND requires an x86_64 or arm64 target"
+#if defined(__APPLE__)
+#define SYS_VM_TARGET_APPLE 1
+#else
+#define SYS_VM_TARGET_APPLE 0
+#endif
+
+#ifndef SYS_VM_ENABLE_AARCH64_JIT
+#define SYS_VM_ENABLE_AARCH64_JIT (SYS_VM_TARGET_ARM64 && SYS_VM_TARGET_APPLE)
+#endif
+
+#ifndef SYS_VM_HAS_AARCH64_JIT_BACKEND
+#define SYS_VM_HAS_AARCH64_JIT_BACKEND \
+   (SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64 && SYS_VM_TARGET_APPLE && SYS_VM_ENABLE_AARCH64_JIT)
+#endif
+
+#if SYS_VM_HAS_JIT_BACKEND && !SYS_VM_TARGET_X86_64 && !SYS_VM_HAS_AARCH64_JIT_BACKEND
+#error "SYS_VM_HAS_JIT_BACKEND requires x86_64 or Apple AArch64"
 #endif
 
 #ifndef SYS_VM_HAS_JIT_PROFILE
@@ -61,7 +76,7 @@ inline constexpr bool sys_vm_has_jit_backend = SYS_VM_HAS_JIT_BACKEND != 0;
 /// True when this build supports async JIT profiling/backtrace helpers.
 inline constexpr bool sys_vm_has_jit_profile = SYS_VM_HAS_JIT_PROFILE != 0;
 
-/// True when this build contains the AArch64 JIT backend.
-inline constexpr bool sys_vm_has_aarch64_jit_backend = SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64;
+/// True when this build contains the Apple AArch64 JIT backend.
+inline constexpr bool sys_vm_has_aarch64_jit_backend = SYS_VM_HAS_AARCH64_JIT_BACKEND != 0;
 
 }} // namespace sysio::vm

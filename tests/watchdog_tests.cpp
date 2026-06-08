@@ -4,6 +4,7 @@
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/watchdog.hpp>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -61,6 +62,36 @@ struct cooperative_timeout_watchdog {
    }
 };
 
+struct late_execution_thread_interrupt_watchdog {
+   template <typename F>
+   struct guard {
+      F callback;
+
+      ~guard() {
+         std::thread callback_thread{[this]() { callback(); }};
+         callback_thread.join();
+      }
+   };
+
+   /// Fires when timed_run leaves the user callback, after the JIT signal frame has been restored.
+   template <typename F>
+   guard<std::decay_t<F>> scoped_run(F&& callback) {
+      return guard<std::decay_t<F>>{std::forward<F>(callback)};
+   }
+};
+
+/// Builds a module with an exported function that returns before the watchdog guard is destroyed.
+std::vector<uint8_t> make_return_42_wasm_module() {
+   /*
+    * (module
+    *   (func (export "run") (result i32)
+    *     i32.const 42))
+    */
+   return { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00,
+            0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e,
+            0x00, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b };
+}
+
 /// Builds a module with an exported function whose body never reaches a timed_run boundary.
 std::vector<uint8_t> make_infinite_loop_wasm_module() {
    /*
@@ -94,8 +125,7 @@ TEST_CASE("watchdog no interrupt", "[watchdog_no_interrupt]") {
    CHECK(okay);
 }
 
-#if SYS_VM_TARGET_ARM64
-#if SYS_VM_HAS_JIT_BACKEND
+#if SYS_VM_HAS_AARCH64_JIT_BACKEND
 TEST_CASE("AArch64 JIT watchdog interrupt signals the execution thread", "[watchdog_interrupt][jit][aarch64]") {
    using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
    auto      code  = make_infinite_loop_wasm_module();
@@ -117,5 +147,15 @@ TEST_CASE("AArch64 JIT cooperative watchdog does not signal the execution thread
                    }),
                    sysio::vm::timeout_exception);
 }
-#endif
+
+TEST_CASE("AArch64 JIT watchdog late signal is reported as timeout", "[watchdog_interrupt][jit][aarch64]") {
+   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
+   auto      code  = make_return_42_wasm_module();
+   backend_t bkend(code, &wa);
+
+   CHECK_THROWS_AS(bkend.timed_run(late_execution_thread_interrupt_watchdog{}, [&]() {
+                      bkend.call("env", "run");
+                   }),
+                   sysio::vm::timeout_exception);
+}
 #endif

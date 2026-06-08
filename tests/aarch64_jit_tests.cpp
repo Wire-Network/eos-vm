@@ -6,7 +6,7 @@ using namespace sysio::vm;
 
 extern wasm_allocator wa;
 
-#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_ARM64
+#if SYS_VM_HAS_AARCH64_JIT_BACKEND
 namespace {
 struct aarch64_jit_imports {
    /// Returns a small deterministic i32 value so the AArch64 host-call bridge can be tested in isolation.
@@ -1046,18 +1046,37 @@ TEST_CASE("AArch64 JIT executes softfloat arithmetic and comparisons", "[jit][aa
    using backend_t = backend<std::nullptr_t, jit>;
    backend_t bkend(code, &wa);
 
+   wasm_allocator                       interpreter_allocator;
+   auto                                 interpreter_code = code;
+   backend<std::nullptr_t, interpreter> interpreter_backend(interpreter_code, &interpreter_allocator);
+
    auto f32_result = bkend.call_with_return("env", "a", bit_cast<float>(UINT32_C(0x3f000000)));
    REQUIRE(f32_result);
    CHECK(bit_cast<uint32_t>(f32_result->to_f32()) == UINT32_C(0x40000000));
+
+   auto interpreter_f32_result =
+         interpreter_backend.call_with_return("env", "a", bit_cast<float>(UINT32_C(0x3f000000)));
+   REQUIRE(interpreter_f32_result);
+   CHECK(bit_cast<uint32_t>(f32_result->to_f32()) == bit_cast<uint32_t>(interpreter_f32_result->to_f32()));
 
    auto f64_result = bkend.call_with_return("env", "b", bit_cast<double>(UINT64_C(0x4008000000000000)));
    REQUIRE(f64_result);
    CHECK(bit_cast<uint64_t>(f64_result->to_f64()) == UINT64_C(0x4014000000000000));
 
+   auto interpreter_f64_result =
+         interpreter_backend.call_with_return("env", "b", bit_cast<double>(UINT64_C(0x4008000000000000)));
+   REQUIRE(interpreter_f64_result);
+   CHECK(bit_cast<uint64_t>(f64_result->to_f64()) == bit_cast<uint64_t>(interpreter_f64_result->to_f64()));
+
    auto cmp_result = bkend.call_with_return("env", "c", bit_cast<float>(UINT32_C(0x40800000)),
                                             bit_cast<float>(UINT32_C(0x40000000)));
    REQUIRE(cmp_result);
    CHECK(cmp_result->to_ui32() == 1u);
+
+   auto interpreter_cmp_result = interpreter_backend.call_with_return("env", "c", bit_cast<float>(UINT32_C(0x40800000)),
+                                                                      bit_cast<float>(UINT32_C(0x40000000)));
+   REQUIRE(interpreter_cmp_result);
+   CHECK(cmp_result->to_ui32() == interpreter_cmp_result->to_ui32());
 }
 
 TEST_CASE("AArch64 JIT executes float memory and global raw-bit round trips", "[jit][aarch64]") {
@@ -1155,11 +1174,22 @@ TEST_CASE("AArch64 JIT executes softfloat conversions and traps NaN truncation",
    using backend_t = backend<std::nullptr_t, jit>;
    backend_t bkend(code, &wa);
 
+   wasm_allocator                       interpreter_allocator;
+   auto                                 interpreter_code = code;
+   backend<std::nullptr_t, interpreter> interpreter_backend(interpreter_code, &interpreter_allocator);
+
    auto result = bkend.call_with_return("env", "c", UINT32_C(2), UINT64_C(3), bit_cast<float>(UINT32_C(0x3fc00000)),
                                         bit_cast<double>(UINT64_C(0x4012000000000000)));
    REQUIRE(result);
    CHECK(result->to_ui64() == 11u);
 
+   auto interpreter_result = interpreter_backend.call_with_return("env", "c", UINT32_C(2), UINT64_C(3),
+                                                                  bit_cast<float>(UINT32_C(0x3fc00000)),
+                                                                  bit_cast<double>(UINT64_C(0x4012000000000000)));
+   REQUIRE(interpreter_result);
+   CHECK(result->to_ui64() == interpreter_result->to_ui64());
+
    CHECK_THROWS_AS(bkend.call_with_return("env", "t"), wasm_interpreter_exception);
+   CHECK_THROWS_AS(interpreter_backend.call_with_return("env", "t"), wasm_interpreter_exception);
 }
 #endif
