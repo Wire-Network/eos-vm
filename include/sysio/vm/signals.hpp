@@ -28,6 +28,10 @@ namespace sysio { namespace vm {
    __attribute__((visibility("default")))
    inline std::atomic<bool> timed_run_has_timed_out{false};
 
+   __attribute__((visibility("default")))
+   /// Points to the timeout state for the timed_run currently executing on this thread.
+   inline thread_local std::atomic<bool>* active_timed_run_has_timed_out{nullptr};
+
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
    inline thread_local std::exception_ptr saved_exception{nullptr};
@@ -50,13 +54,22 @@ namespace sysio { namespace vm {
          if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
             siglongjmp(*dest, sig);
 
-         // timed_run_has_timed_out is global because code pages are shared by all executions using the same JIT
-         // allocation; when one watchdog disables them, any executing thread can take the resulting signal.
-         // SEGV/BUS/ILL because the code_memory_range was set to PROT_NONE. Apple Silicon may report an
-         // instruction fetch from disabled JIT pages as SIGILL rather than SIGSEGV.
+         // x86_64 uses shared code-page revocation for timeout interruption. The timeout state must be global
+         // because any executing thread can fault after another watchdog disables executable pages.
+         //
+         // AArch64 uses a directed signal instead. Its timeout state stays thread-local so one interrupted
+         // execution does not cause unrelated faults in another execution thread to be classified as timeouts.
+         const bool execution_timed_out = [] {
+            if constexpr (sys_vm_target_aarch64) {
+               return active_timed_run_has_timed_out &&
+                      active_timed_run_has_timed_out->load(std::memory_order_acquire);
+            } else {
+               return timed_run_has_timed_out.load(std::memory_order_acquire);
+            }
+         }();
+         // SEGV/BUS/ILL can come from a revoked code page or from the directed AArch64 interruption signal.
          // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
-         if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) &&
-             !timed_run_has_timed_out.load(std::memory_order_acquire)) {
+         if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out) {
             goto chain_previous_handler;
          }
          //otherwise, jump out

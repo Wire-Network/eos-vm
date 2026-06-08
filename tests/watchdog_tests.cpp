@@ -35,6 +35,32 @@ struct execution_thread_interrupt_watchdog {
    }
 };
 
+struct cooperative_timeout_watchdog {
+   /// Joins the callback thread after the protected scope observes the timeout.
+   struct guard {
+      std::thread callback_thread;
+
+      ~guard() {
+         if (callback_thread.joinable())
+            callback_thread.join();
+      }
+   };
+
+   /// Fires from another thread but asks timed_run not to send a signal into the execution thread.
+   template <typename F>
+   guard scoped_run(F&& callback) {
+      return guard{ std::thread{ [callback = std::forward<F>(callback)]() mutable {
+         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+         callback();
+      } } };
+   }
+
+   /// Identifies watchdog expiry paths that should be observed without asynchronously interrupting execution.
+   bool should_interrupt_execution_thread() const {
+      return false;
+   }
+};
+
 /// Builds a module with an exported function whose body never reaches a timed_run boundary.
 std::vector<uint8_t> make_infinite_loop_wasm_module() {
    /*
@@ -70,13 +96,24 @@ TEST_CASE("watchdog no interrupt", "[watchdog_no_interrupt]") {
 
 #if SYS_VM_TARGET_ARM64
 #if SYS_VM_HAS_JIT_BACKEND
-TEST_CASE("AArch64 JIT watchdog interrupt disables code pages", "[watchdog_interrupt][jit][aarch64]") {
+TEST_CASE("AArch64 JIT watchdog interrupt signals the execution thread", "[watchdog_interrupt][jit][aarch64]") {
    using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
    auto      code  = make_infinite_loop_wasm_module();
    backend_t bkend(code, &wa);
 
    CHECK_THROWS_AS(bkend.timed_run(execution_thread_interrupt_watchdog{}, [&]() {
                       bkend.call("env", "loop");
+                   }),
+                   sysio::vm::timeout_exception);
+}
+
+TEST_CASE("AArch64 JIT cooperative watchdog does not signal the execution thread", "[watchdog_interrupt][jit][aarch64]") {
+   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
+   auto      code  = make_infinite_loop_wasm_module();
+   backend_t bkend(code, &wa);
+
+   CHECK_THROWS_AS(bkend.timed_run(cooperative_timeout_watchdog{}, []() {
+                      std::this_thread::sleep_for(std::chrono::milliseconds(50));
                    }),
                    sysio::vm::timeout_exception);
 }

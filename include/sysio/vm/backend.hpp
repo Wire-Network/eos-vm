@@ -99,6 +99,18 @@ namespace sysio { namespace vm {
       using host_t     = detail::host_type_t<HostFunctions>;
       using context_t  = typename Impl::template context<HostFunctions>;
       using parser_t   = typename Impl::template parser<HostFunctions, Options, DebugInfo>;
+
+      template <typename Watchdog>
+      static auto should_interrupt_execution_thread(Watchdog& watchdog, int)
+            -> decltype(watchdog.should_interrupt_execution_thread()) {
+         return watchdog.should_interrupt_execution_thread();
+      }
+
+      template <typename Watchdog>
+      static bool should_interrupt_execution_thread(Watchdog&, ...) {
+         return true;
+      }
+
       void construct(host_t* host=nullptr) {
          mod->finalize();
          if (ctx.owns) {
@@ -317,42 +329,78 @@ namespace sysio { namespace vm {
 
       template<typename Watchdog, typename F>
       inline void timed_run(Watchdog&& wd, F&& f) {
-         // timed_run_has_timed_out is process-wide because all executing timed_run threads can fault
-         // after any watchdog revokes shared code-page execute permission.
-         auto reenable_code = scope_guard{[this](){
-            --total_timed_run_in_progress;
-            --mod->allocator.timed_run_in_progress;
-            if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
-               if (total_timed_run_in_progress == 0) {
-                  timed_run_has_timed_out.store(false, std::memory_order_release);
-               }
-               if (mod->allocator.timed_run_in_progress == 0) {
-                  mod->allocator.enable_code(Impl::is_jit);
-               }
-            }
-         }};
-         try {
-            ++total_timed_run_in_progress;
-            ++mod->allocator.timed_run_in_progress;
-            pthread_t execution_thread = pthread_self();
-            auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this, execution_thread]() {
-               timed_run_has_timed_out.store(true, std::memory_order_release);
-               // Apple Silicon can stop tight generated-code loops the same way x86_64 does: revoke execute
-               // permission from the JIT code pages and let the execution thread fault on instruction fetch inside
-               // invoke_with_signal_handler. The synthetic signal fallback is AArch64-only so x86_64 keeps its
-               // historical code-page-revocation behavior; it covers MAP_JIT/protection failures on Apple Silicon.
-               if (!mod->allocator.disable_code()) {
-                  if constexpr (sys_vm_target_aarch64) {
+         if constexpr (sys_vm_target_aarch64) {
+            // AArch64 does not use process-wide code-page revocation for timed_run. The watchdog targets only the
+            // execution thread, and the signal handler consults this thread-local pointer before converting the
+            // signal into a timeout. This keeps unrelated execution threads from inheriting another run's timeout.
+            std::atomic<bool> timed_run_has_timed_out{false};
+            std::atomic<bool>* const previous_timed_run_has_timed_out = active_timed_run_has_timed_out;
+            active_timed_run_has_timed_out = &timed_run_has_timed_out;
+            auto restore_timeout_state = scope_guard{[previous_timed_run_has_timed_out]() {
+               active_timed_run_has_timed_out = previous_timed_run_has_timed_out;
+            }};
+            auto leave_timed_run = scope_guard{[this](){
+               --mod->allocator.timed_run_in_progress;
+            }};
+            try {
+               ++mod->allocator.timed_run_in_progress;
+               pthread_t execution_thread = pthread_self();
+               auto wd_guard = std::forward<Watchdog>(wd).scoped_run([execution_thread,
+                                                                       &wd,
+                                                                       &timed_run_has_timed_out]() {
+                  timed_run_has_timed_out.store(true, std::memory_order_release);
+                  // Cooperative fork interruption can run through the same watchdog interface. Only the real
+                  // execution-deadline path should deliver the directed signal into the JIT execution thread.
+                  if (should_interrupt_execution_thread(wd, 0) && !pthread_equal(pthread_self(), execution_thread)) {
                      pthread_kill(execution_thread, SIGSEGV);
                   }
+               });
+               if (timed_run_has_timed_out.load(std::memory_order_acquire))
+                  throw timeout_exception{ "execution timed out" };
+               std::forward<F>(f)();
+               if (timed_run_has_timed_out.load(std::memory_order_acquire))
+                  throw timeout_exception{ "execution timed out" };
+            } catch(wasm_memory_exception&) {
+               if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
+                  throw timeout_exception{ "execution timed out" };
+               } else {
+                  throw;
                }
-            });
-            std::forward<F>(f)();
-         } catch(wasm_memory_exception&) {
-            if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
-               throw timeout_exception{ "execution timed out" };
-            } else {
-               throw;
+            }
+         } else {
+            // x86_64 interrupts tight generated-code loops by revoking execute permission on shared JIT code pages.
+            // Since any execution thread using those pages can fault, the timeout marker and re-enable bookkeeping
+            // are intentionally process-wide.
+            auto reenable_code = scope_guard{[this](){
+               --total_timed_run_in_progress;
+               --mod->allocator.timed_run_in_progress;
+               if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
+                  if (total_timed_run_in_progress == 0) {
+                     timed_run_has_timed_out.store(false, std::memory_order_release);
+                  }
+                  if (mod->allocator.timed_run_in_progress == 0) {
+                     mod->allocator.enable_code(Impl::is_jit);
+                  }
+               }
+            }};
+            try {
+               ++total_timed_run_in_progress;
+               ++mod->allocator.timed_run_in_progress;
+               auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this]() {
+                  timed_run_has_timed_out.store(true, std::memory_order_release);
+                  mod->allocator.disable_code();
+               });
+               if (timed_run_has_timed_out.load(std::memory_order_acquire))
+                  throw timeout_exception{ "execution timed out" };
+               std::forward<F>(f)();
+               if (timed_run_has_timed_out.load(std::memory_order_acquire))
+                  throw timeout_exception{ "execution timed out" };
+            } catch(wasm_memory_exception&) {
+               if (timed_run_has_timed_out.load(std::memory_order_acquire)) {
+                  throw timeout_exception{ "execution timed out" };
+               } else {
+                  throw;
+               }
             }
          }
       }
