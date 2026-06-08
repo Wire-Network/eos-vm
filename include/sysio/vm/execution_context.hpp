@@ -357,7 +357,9 @@ namespace sysio { namespace vm {
                   (_mod->maximum_stack + 2 /*frame ptr + return ptr*/) * (_remaining_call_depth + 1) +
                  sizeof...(Args) + 4 /* scratch space */;
                stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
-               // reserve 24 bytes for data accessed by inline assembly
+               // Reserve trampoline scratch space: x86_64 keeps the historical 24 bytes used by
+               // inline assembly data, while AArch64 needs one 16-byte slot to preserve alignment
+               // and save the caller SP.
                void* stack = alt_stack.top();
                if(stack) {
                   constexpr std::ptrdiff_t jit_stack_reserve = sys_vm_has_aarch64_jit_backend ? 16 : 24;

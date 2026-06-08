@@ -5,6 +5,7 @@
  */
 
 #include <sysio/vm/allocator.hpp>
+#include <sysio/vm/config.hpp>
 #include <sysio/vm/guarded_ptr.hpp>
 #include <sysio/vm/opcodes.hpp>
 #include <sysio/vm/vector.hpp>
@@ -230,7 +231,7 @@ namespace sysio { namespace vm {
          std::vector<jit_func_type>        types;
          std::vector<jit_import_entry>     imports;
          std::vector<uint32_t>             functions;
-         /// Copied tables used by AArch64 call_indirect resolution.
+         /// Populated only by the AArch64 JIT, which resolves call_indirect at runtime.
          std::vector<jit_table_type>       tables;
          std::vector<memory_type>          memories;
          std::vector<global_variable>      globals;
@@ -239,9 +240,9 @@ namespace sysio { namespace vm {
          std::vector<size_t>               jit_code_offset;
          std::vector<jit_data_segment>     data;
          std::vector<uint32_t>             import_functions;
-         /// Type aliases copied for AArch64 call_indirect type checks.
+         /// Populated only by the AArch64 JIT for runtime call_indirect type checks.
          std::vector<uint32_t>             type_aliases;
-         /// Fast-function type indices copied for AArch64 call_indirect type checks.
+         /// Populated only by the AArch64 JIT for runtime call_indirect type checks.
          std::vector<uint32_t>             fast_functions;
 
          auto& get_function_type(uint32_t index) const {
@@ -296,15 +297,17 @@ namespace sysio { namespace vm {
             jit_mod->functions.assign(functions.data(), functions.data() + functions.size());
          }
 
-         if (auto tables_size = tables.size(); tables_size > 0) {
-            jit_mod->tables.reserve(tables_size);
-            for (uint32_t i = 0; i < tables_size; ++i) {
-               const auto& table = tables[i];
-               jit_mod->tables.emplace_back(jit_mod_t::jit_table_type{
-                  table.element_type,
-                  table.limits,
-                  {table.table.data(), table.table.data() + table.table.size()}
-               });
+         if constexpr (sys_vm_has_aarch64_jit_backend) {
+            if (auto tables_size = tables.size(); tables_size > 0) {
+               jit_mod->tables.reserve(tables_size);
+               for (uint32_t i = 0; i < tables_size; ++i) {
+                  const auto& table = tables[i];
+                  jit_mod->tables.emplace_back(jit_mod_t::jit_table_type{
+                     table.element_type,
+                     table.limits,
+                     {table.table.data(), table.table.data() + table.table.size()}
+                  });
+               }
             }
          }
 
@@ -347,12 +350,14 @@ namespace sysio { namespace vm {
             jit_mod->import_functions.assign(import_functions.data(), import_functions.data() + import_functions.size());
          }
 
-         if (type_aliases.size() > 0) {
-            jit_mod->type_aliases.assign(type_aliases.data(), type_aliases.data() + type_aliases.size());
-         }
+         if constexpr (sys_vm_has_aarch64_jit_backend) {
+            if (type_aliases.size() > 0) {
+               jit_mod->type_aliases.assign(type_aliases.data(), type_aliases.data() + type_aliases.size());
+            }
 
-         if (fast_functions.size() > 0) {
-            jit_mod->fast_functions.assign(fast_functions.data(), fast_functions.data() + fast_functions.size());
+            if (fast_functions.size() > 0) {
+               jit_mod->fast_functions.assign(fast_functions.data(), fast_functions.data() + fast_functions.size());
+            }
          }
       }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sysio/vm/allocator.hpp>
+#include <sysio/vm/config.hpp>
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/span.hpp>
 #include <sysio/vm/utils.hpp>
@@ -25,8 +26,7 @@ namespace sysio { namespace vm {
    inline thread_local std::span<std::byte> memory_range;
 
    __attribute__((visibility("default")))
-   /// Points to the timeout state for the timed_run currently executing on this thread.
-   inline thread_local std::atomic<bool>* active_timed_run_has_timed_out{nullptr};
+   inline std::atomic<bool> timed_run_has_timed_out{false};
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
@@ -50,14 +50,13 @@ namespace sysio { namespace vm {
          if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
             siglongjmp(*dest, sig);
 
-         // active_timed_run_has_timed_out points at this thread's active timed_run state. The watchdog may set that
-         // state from another thread before disabling code pages or sending the fallback interruption signal.
+         // timed_run_has_timed_out is global because code pages are shared by all executions using the same JIT
+         // allocation; when one watchdog disables them, any executing thread can take the resulting signal.
          // SEGV/BUS/ILL because the code_memory_range was set to PROT_NONE. Apple Silicon may report an
          // instruction fetch from disabled JIT pages as SIGILL rather than SIGSEGV.
          // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
          if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) &&
-             (!active_timed_run_has_timed_out ||
-              !active_timed_run_has_timed_out->load(std::memory_order_acquire))) {
+             !timed_run_has_timed_out.load(std::memory_order_acquire)) {
             goto chain_previous_handler;
          }
          //otherwise, jump out
@@ -85,8 +84,6 @@ chain_previous_handler:
          // FIXME: We need to be at least as strict as the original
          // flags and relax the mask as needed.
          prev_action->sa_sigaction(sig, info, uap);
-         sigaction(sig, prev_action, nullptr);
-         raise(sig);
       } else {
          if(prev_action->sa_handler == SIG_DFL) {
             // The default for all three signals is to terminate the process.
@@ -157,7 +154,10 @@ chain_previous_handler:
       install_signal_handler_once<SIGBUS>(sa);
 #endif
       install_signal_handler_once<SIGFPE>(sa);
-      install_signal_handler_once<SIGILL>(sa);
+      // Apple Silicon may deliver disabled-JIT-page instruction fetches as SIGILL.
+      if constexpr (sys_vm_target_aarch64) {
+         install_signal_handler_once<SIGILL>(sa);
+      }
    }
 
    inline void setup_signal_handler() {
@@ -172,7 +172,7 @@ chain_previous_handler:
    /// with non-trivial destructors, then it must mask the relevant signals
    /// during the lifetime of these objects or the behavior is undefined.
    ///
-   /// signals handled: SIGSEGV, SIGBUS (except on Linux), SIGFPE, SIGILL
+   /// signals handled: SIGSEGV, SIGBUS (except on Linux), SIGFPE, and SIGILL on AArch64
    ///
    // Make this noinline to prevent possible corruption of the caller's local variables.
    // It's unlikely, but I'm not sure that it can definitely be ruled out if both
@@ -199,7 +199,9 @@ chain_previous_handler:
          sigaddset(&unblock_mask, SIGSEGV);
          sigaddset(&unblock_mask, SIGBUS);
          sigaddset(&unblock_mask, SIGFPE);
-         sigaddset(&unblock_mask, SIGILL);
+         if constexpr (sys_vm_target_aarch64) {
+            sigaddset(&unblock_mask, SIGILL);
+         }
          sigaddset(&unblock_mask, SIGPROF);
          pthread_sigmask(SIG_UNBLOCK, &unblock_mask, &old_sigmask);
          try {

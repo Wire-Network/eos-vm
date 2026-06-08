@@ -188,11 +188,9 @@ TEST_CASE("Testing JIT code copy, disable, and re-enable", "[growable_allocator]
 
    bool interrupted = false;
    bool disabled = alloc.disable_code();
-   std::atomic<bool> timed_run_has_timed_out{true};
-   std::atomic<bool>* old_timed_run_has_timed_out = active_timed_run_has_timed_out;
-   active_timed_run_has_timed_out = &timed_run_has_timed_out;
+   bool old_timed_run_has_timed_out = timed_run_has_timed_out.exchange(true, std::memory_order_acq_rel);
    auto restore_timed_run_has_timed_out = scope_guard{[old_timed_run_has_timed_out]() {
-      active_timed_run_has_timed_out = old_timed_run_has_timed_out;
+      timed_run_has_timed_out.store(old_timed_run_has_timed_out, std::memory_order_release);
    }};
    if (disabled) {
       invoke_with_signal_handler([&]() {
@@ -207,7 +205,6 @@ TEST_CASE("Testing JIT code copy, disable, and re-enable", "[growable_allocator]
          interrupted = sig == SIGSEGV;
       }, alloc, nullptr);
    }
-   timed_run_has_timed_out.store(false, std::memory_order_release);
 
    CHECK(interrupted);
    CHECK(alloc.enable_code(true));
