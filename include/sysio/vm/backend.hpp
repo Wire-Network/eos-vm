@@ -400,9 +400,13 @@ namespace sysio { namespace vm {
                }
             }
          } else {
-            // x86_64 interrupts tight generated-code loops by revoking execute permission on shared JIT code pages.
-            // Since any execution thread using those pages can fault, the timeout marker and re-enable bookkeeping
-            // are intentionally process-wide.
+            // timed_run_has_timed_out lives in signal handling code because the signal handler must inspect it when
+            // revoked executable pages produce a SEGV/BUS/ILL. For x86_64 this state is process-wide, not thread-local:
+            // disabling shared JIT code pages can interrupt any thread currently executing that code. In production
+            // this is either a normal transaction on the main thread or read-only transactions sharing the same timeout
+            // window, so timing out one run intentionally stops all active executions. The older thread-local timeout
+            // marker was unsafe because the watchdog callback can run on a different thread and update the wrong
+            // thread's flag, leaving the actual execution thread running.
             auto reenable_code = scope_guard{[this](){
                --total_timed_run_in_progress;
                --mod->allocator.timed_run_in_progress;
