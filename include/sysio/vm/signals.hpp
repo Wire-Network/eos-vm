@@ -9,28 +9,24 @@
 #include <atomic>
 #include <cstdlib>
 #include <exception>
-#include <utility>
-#include <signal.h>
 #include <setjmp.h>
+#include <signal.h>
+#include <utility>
 
 namespace sysio { namespace vm {
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
-   __attribute__((visibility("default")))
-   inline thread_local std::atomic<sigjmp_buf*> signal_dest{nullptr};
+   __attribute__((visibility("default"))) inline thread_local std::atomic<sigjmp_buf*> signal_dest{ nullptr };
 
-   __attribute__((visibility("default")))
-   inline thread_local std::span<std::byte> code_memory_range;
+   __attribute__((visibility("default"))) inline thread_local std::span<std::byte> code_memory_range;
 
-   __attribute__((visibility("default")))
-   inline thread_local std::span<std::byte> memory_range;
+   __attribute__((visibility("default"))) inline thread_local std::span<std::byte> memory_range;
 
-   __attribute__((visibility("default")))
-   inline std::atomic<bool> timed_run_has_timed_out{false};
+   __attribute__((visibility("default"))) inline std::atomic<bool> timed_run_has_timed_out{ false };
 
    __attribute__((visibility("default")))
    /// Points to the timeout state for the timed_run currently executing on this thread.
-   inline thread_local std::atomic<bool>* active_timed_run_has_timed_out{nullptr};
+   inline thread_local std::atomic<bool>* active_timed_run_has_timed_out{ nullptr };
 
    /// Describes where the AArch64 timeout path is relative to VM execution.
    enum class aarch64_timeout_phase {
@@ -44,54 +40,93 @@ namespace sysio { namespace vm {
    inline thread_local aarch64_timeout_phase active_aarch64_timeout_phase = aarch64_timeout_phase::none;
 
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
-   __attribute__((visibility("default")))
-   inline thread_local std::exception_ptr saved_exception{nullptr};
+   __attribute__((visibility("default"))) inline thread_local std::exception_ptr saved_exception{ nullptr };
 
-   template<int Sig>
+   template <int Sig>
    inline struct sigaction prev_signal_handler;
 
+   inline void signal_handler(int sig, siginfo_t* info, void* uap);
+
+   /// Returns true when the current timed_run state says this signal represents a VM execution timeout.
+   inline bool execution_has_timed_out() {
+      if constexpr (sys_vm_has_aarch64_jit_backend) {
+         return active_timed_run_has_timed_out && active_timed_run_has_timed_out->load(std::memory_order_acquire);
+      } else {
+         return timed_run_has_timed_out.load(std::memory_order_acquire);
+      }
+   }
+
+   /// Chains a signal to the handler that was installed before sys-vm registered its signal handler.
+   inline void chain_previous_signal_handler(int sig, siginfo_t* info, void* uap) {
+      struct sigaction* prev_action;
+      switch (sig) {
+         case SIGSEGV: prev_action = &prev_signal_handler<SIGSEGV>; break;
+         case SIGBUS: prev_action = &prev_signal_handler<SIGBUS>; break;
+         case SIGFPE: prev_action = &prev_signal_handler<SIGFPE>; break;
+         case SIGILL: prev_action = &prev_signal_handler<SIGILL>; break;
+         default: std::abort();
+      }
+      if (!prev_action)
+         std::abort();
+      if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
+         signal(sig, SIG_DFL);
+         raise(sig);
+         std::abort();
+      }
+      if (prev_action->sa_flags & SA_SIGINFO) {
+         // FIXME: We need to be at least as strict as the original
+         // flags and relax the mask as needed.
+         prev_action->sa_sigaction(sig, info, uap);
+      } else {
+         if (prev_action->sa_handler == SIG_DFL) {
+            // The default for all three signals is to terminate the process.
+            sigaction(sig, prev_action, nullptr);
+            raise(sig);
+         } else if (prev_action->sa_handler == SIG_IGN) {
+            // Do nothing
+         } else {
+            prev_action->sa_handler(sig);
+         }
+      }
+   }
+
+   /// Returns true when an active VM signal frame handled the signal or false when it must be chained.
+   inline bool handle_active_vm_signal(int sig, siginfo_t* info, sigjmp_buf* dest) {
+      const void* addr = info->si_addr;
+
+      // neither range set means legacy catch-all behavior; useful for some of the old tests
+      if (code_memory_range.empty() && memory_range.empty())
+         siglongjmp(*dest, sig);
+
+      // a failure in the memory range is always jumped out of
+      if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
+         siglongjmp(*dest, sig);
+
+      const bool execution_timed_out = execution_has_timed_out();
+      // SEGV/BUS/ILL can come from a revoked code page or from the directed AArch64 interruption signal.
+      // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
+      if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out) {
+         return false;
+      }
+      if constexpr (sys_vm_has_aarch64_jit_backend) {
+         if (sig == SIGSEGV && execution_timed_out) {
+            active_aarch64_timeout_phase = aarch64_timeout_phase::returned_from_jit;
+         }
+      }
+      // otherwise, jump out
+      siglongjmp(*dest, sig);
+      return true;
+   }
+
    inline void signal_handler(int sig, siginfo_t* info, void* uap) {
-      ignore_unused_variable_warning(uap);
       sigjmp_buf* dest = std::atomic_load(&signal_dest);
 
       if (dest) {
-         const void* addr = info->si_addr;
-
-         //neither range set means legacy catch-all behavior; useful for some of the old tests
-         if (code_memory_range.empty() && memory_range.empty())
-            siglongjmp(*dest, sig);
-
-         //a failure in the memory range is always jumped out of
-         if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
-            siglongjmp(*dest, sig);
-
-         // x86_64 uses shared code-page revocation for timeout interruption. The timeout state must be global
-         // because any executing thread can fault after another watchdog disables executable pages.
-         //
-         // The AArch64 JIT uses a directed signal instead. Its timeout state stays thread-local so one interrupted
-         // execution does not cause unrelated faults in another execution thread to be classified as timeouts.
-         const bool execution_timed_out = [] {
-            if constexpr (sys_vm_has_aarch64_jit_backend) {
-               return active_timed_run_has_timed_out &&
-                      active_timed_run_has_timed_out->load(std::memory_order_acquire);
-            } else {
-               return timed_run_has_timed_out.load(std::memory_order_acquire);
-            }
-         }();
-         // SEGV/BUS/ILL can come from a revoked code page or from the directed AArch64 interruption signal.
-         // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
-         if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out) {
-            goto chain_previous_handler;
+         if (!handle_active_vm_signal(sig, info, dest)) {
+            chain_previous_signal_handler(sig, info, uap);
+            return;
          }
-         if constexpr (sys_vm_has_aarch64_jit_backend) {
-            if (sig == SIGSEGV && execution_timed_out) {
-               active_aarch64_timeout_phase = aarch64_timeout_phase::returned_from_jit;
-            }
-         }
-         //otherwise, jump out
-         siglongjmp(*dest, sig);
-
-         //if dest not set, fall through and let chained handler an opportunity to handle
+         return;
       }
 
       if constexpr (sys_vm_has_aarch64_jit_backend) {
@@ -106,39 +141,10 @@ namespace sysio { namespace vm {
          }
       }
 
-chain_previous_handler:
-      struct sigaction* prev_action;
-      switch(sig) {
-         case SIGSEGV: prev_action = &prev_signal_handler<SIGSEGV>; break;
-         case SIGBUS: prev_action = &prev_signal_handler<SIGBUS>; break;
-         case SIGFPE: prev_action = &prev_signal_handler<SIGFPE>; break;
-         case SIGILL: prev_action = &prev_signal_handler<SIGILL>; break;
-         default: std::abort();
-      }
-      if (!prev_action) std::abort();
-      if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
-         signal(sig, SIG_DFL);
-         raise(sig);
-         std::abort();
-      }
-      if (prev_action->sa_flags & SA_SIGINFO) {
-         // FIXME: We need to be at least as strict as the original
-         // flags and relax the mask as needed.
-         prev_action->sa_sigaction(sig, info, uap);
-      } else {
-         if(prev_action->sa_handler == SIG_DFL) {
-            // The default for all three signals is to terminate the process.
-            sigaction(sig, prev_action, nullptr);
-            raise(sig);
-         } else if(prev_action->sa_handler == SIG_IGN) {
-            // Do nothing
-         } else {
-            prev_action->sa_handler(sig);
-         }
-      }
+      chain_previous_signal_handler(sig, info, uap);
    }
 
-   template<int Sig>
+   template <int Sig>
    inline void install_signal_handler_once(const struct sigaction& sa) {
       struct sigaction current;
       sigaction(Sig, nullptr, &current);
@@ -151,13 +157,14 @@ chain_previous_handler:
    // This is a workaround for the fact that it
    // is currently unsafe to throw an exception through
    // a jit frame.
-   template<typename F>
+   template <typename F>
    inline void longjmp_on_exception(F&& f) {
-      static_assert(std::is_trivially_destructible_v<std::decay_t<F>>, "longjmp has undefined behavior when it bypasses destructors.");
+      static_assert(std::is_trivially_destructible_v<std::decay_t<F>>,
+                    "longjmp has undefined behavior when it bypasses destructors.");
       bool caught_exception = false;
       try {
          f();
-      } catch(...) {
+      } catch (...) {
          saved_exception = std::current_exception();
          // Cannot safely longjmp from inside the catch,
          // as that will leak the exception.
@@ -173,9 +180,9 @@ chain_previous_handler:
       }
    }
 
-   template<typename E>
+   template <typename E>
    [[noreturn]] inline void throw_(const char* msg) {
-      saved_exception = std::make_exception_ptr(E{msg});
+      saved_exception = std::make_exception_ptr(E{ msg });
       sigset_t block_mask;
       sigemptyset(&block_mask);
       sigaddset(&block_mask, SIGPROF);
@@ -204,7 +211,8 @@ chain_previous_handler:
    inline void setup_signal_handler() {
       static int init_helper = (setup_signal_handler_impl(), 0);
       ignore_unused_variable_warning(init_helper);
-      static_assert(std::atomic<sigjmp_buf*>::is_always_lock_free, "Atomic pointers must be lock-free to be async signal safe.");
+      static_assert(std::atomic<sigjmp_buf*>::is_always_lock_free,
+                    "Atomic pointers must be lock-free to be async signal safe.");
    }
 
    /// Call a function with a signal handler installed.  If this thread is
@@ -218,15 +226,16 @@ chain_previous_handler:
    // Make this noinline to prevent possible corruption of the caller's local variables.
    // It's unlikely, but I'm not sure that it can definitely be ruled out if both
    // this and f are inlined and f modifies locals from the caller.
-   template<typename F, typename E>
-   [[gnu::noinline]] auto invoke_with_signal_handler(F&& f, E&& e, growable_allocator& code_allocator, wasm_allocator* mem_allocator) {
+   template <typename F, typename E>
+   [[gnu::noinline]] auto invoke_with_signal_handler(F&& f, E&& e, growable_allocator& code_allocator,
+                                                     wasm_allocator* mem_allocator) {
       setup_signal_handler();
       sigjmp_buf dest;
       sigjmp_buf* volatile old_signal_handler = nullptr;
-      code_memory_range = code_allocator.get_code_span();
-      memory_range = mem_allocator ? mem_allocator->get_span() : std::span<std::byte>{};
+      code_memory_range                       = code_allocator.get_code_span();
+      memory_range                            = mem_allocator ? mem_allocator->get_span() : std::span<std::byte>{};
       int sig;
-      if((sig = sigsetjmp(dest, 1)) == 0) {
+      if ((sig = sigsetjmp(dest, 1)) == 0) {
          // Note: Cannot use RAII, as non-trivial destructors w/ longjmp
          // have undefined behavior. [csetjmp.syn]
          //
@@ -249,7 +258,7 @@ chain_previous_handler:
             f();
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
-         } catch(...) {
+         } catch (...) {
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
             throw;
@@ -258,7 +267,7 @@ chain_previous_handler:
          std::atomic_store(&signal_dest, old_signal_handler);
          if (sig == -1) {
             std::exception_ptr exception = std::move(saved_exception);
-            saved_exception = nullptr;
+            saved_exception              = nullptr;
             std::rethrow_exception(exception);
          } else {
             e(sig);
