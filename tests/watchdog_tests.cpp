@@ -15,21 +15,21 @@ using sysio::vm::watchdog;
 extern sysio::vm::wasm_allocator wa;
 
 namespace {
+/// Joins a watchdog callback thread when timed_run leaves its protected execution scope.
+struct callback_thread_guard {
+   std::thread callback_thread;
+
+   ~callback_thread_guard() {
+      if (callback_thread.joinable())
+         callback_thread.join();
+   }
+};
+
 struct execution_thread_interrupt_watchdog {
-   /// Joins the watchdog thread when timed_run leaves its protected execution scope.
-   struct guard {
-      std::thread callback_thread;
-
-      ~guard() {
-         if (callback_thread.joinable())
-            callback_thread.join();
-      }
-   };
-
    /// Fires after JIT execution starts so the test proves generated code can be interrupted.
    template <typename F>
-   guard scoped_run(F&& callback) {
-      return guard{ std::thread{ [callback = std::forward<F>(callback)]() mutable {
+   callback_thread_guard scoped_run(F&& callback) {
+      return callback_thread_guard{ std::thread{ [callback = std::forward<F>(callback)]() mutable {
          std::this_thread::sleep_for(std::chrono::milliseconds(10));
          callback();
       } } };
@@ -37,29 +37,34 @@ struct execution_thread_interrupt_watchdog {
 };
 
 struct cooperative_timeout_watchdog {
-   /// Joins the callback thread after the protected scope observes the timeout.
-   struct guard {
-      std::thread callback_thread;
-
-      ~guard() {
-         if (callback_thread.joinable())
-            callback_thread.join();
-      }
-   };
-
    /// Fires from another thread but asks timed_run not to send a signal into the execution thread.
    template <typename F>
-   guard scoped_run(F&& callback) {
-      return guard{ std::thread{ [callback = std::forward<F>(callback)]() mutable {
+   callback_thread_guard scoped_run(F&& callback) {
+      return callback_thread_guard{ std::thread{ [callback = std::forward<F>(callback)]() mutable {
          std::this_thread::sleep_for(std::chrono::milliseconds(10));
          callback();
       } } };
    }
 
    /// Identifies watchdog expiry paths that should be observed without asynchronously interrupting execution.
-   bool should_interrupt_execution_thread() const {
-      return false;
+   bool should_interrupt_execution_thread() const { return false; }
+};
+
+struct deferred_execution_thread_interrupt_watchdog {
+   std::atomic<bool> expired{ false };
+
+   /// Expires after VM execution starts so timed_run must sample the interrupt policy from the watchdog callback.
+   template <typename F>
+   callback_thread_guard scoped_run(F&& callback) {
+      return callback_thread_guard{ std::thread{ [this, callback = std::forward<F>(callback)]() mutable {
+         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+         expired.store(true, std::memory_order_release);
+         callback();
+      } } };
    }
+
+   /// Returns true only after expiry; early sampling would incorrectly choose the cooperative timeout path.
+   bool should_interrupt_execution_thread() const { return expired.load(std::memory_order_acquire); }
 };
 
 struct late_execution_thread_interrupt_watchdog {
@@ -68,7 +73,7 @@ struct late_execution_thread_interrupt_watchdog {
       F callback;
 
       ~guard() {
-         std::thread callback_thread{[this]() { callback(); }};
+         std::thread callback_thread{ [this]() { callback(); } };
          callback_thread.join();
       }
    };
@@ -76,7 +81,7 @@ struct late_execution_thread_interrupt_watchdog {
    /// Fires when timed_run leaves the user callback, after the JIT signal frame has been restored.
    template <typename F>
    guard<std::decay_t<F>> scoped_run(F&& callback) {
-      return guard<std::decay_t<F>>{std::forward<F>(callback)};
+      return guard<std::decay_t<F>>{ std::forward<F>(callback) };
    }
 };
 
@@ -87,9 +92,10 @@ std::vector<uint8_t> make_return_42_wasm_module() {
     *   (func (export "run") (result i32)
     *     i32.const 42))
     */
-   return { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00,
-            0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e,
-            0x00, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b };
+   return {
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03, 0x02, 0x01,
+      0x00, 0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b
+   };
 }
 
 /// Builds a module with an exported function whose body never reaches a timed_run boundary.
@@ -99,9 +105,9 @@ std::vector<uint8_t> make_infinite_loop_wasm_module() {
     *   (func (export "loop")
     *     (loop br 0)))
     */
-   return { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-            0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x6c, 0x6f, 0x6f, 0x70, 0x00, 0x00,
-            0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b };
+   return { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x04, 0x01, 0x60, 0x00,
+            0x00, 0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x6c, 0x6f, 0x6f, 0x70,
+            0x00, 0x00, 0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b };
 }
 } // namespace
 
@@ -131,20 +137,38 @@ TEST_CASE("AArch64 JIT watchdog interrupt signals the execution thread", "[watch
    auto      code  = make_infinite_loop_wasm_module();
    backend_t bkend(code, &wa);
 
-   CHECK_THROWS_AS(bkend.timed_run(execution_thread_interrupt_watchdog{}, [&]() {
-                      bkend.call("env", "loop");
-                   }),
+   CHECK_THROWS_AS(bkend.timed_run(execution_thread_interrupt_watchdog{}, [&]() { bkend.call("env", "loop"); }),
                    sysio::vm::timeout_exception);
 }
 
-TEST_CASE("AArch64 JIT cooperative watchdog does not signal the execution thread", "[watchdog_interrupt][jit][aarch64]") {
+TEST_CASE("AArch64 JIT watchdog samples interrupt policy at expiry", "[watchdog_interrupt][jit][aarch64]") {
    using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
    auto      code  = make_infinite_loop_wasm_module();
    backend_t bkend(code, &wa);
 
-   CHECK_THROWS_AS(bkend.timed_run(cooperative_timeout_watchdog{}, []() {
-                      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-                   }),
+   CHECK_THROWS_AS(
+         bkend.timed_run(deferred_execution_thread_interrupt_watchdog{}, [&]() { bkend.call("env", "loop"); }),
+         sysio::vm::timeout_exception);
+}
+
+TEST_CASE("AArch64 interpreter watchdog interrupts infinite loop", "[watchdog_interrupt][interpreter][aarch64]") {
+   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::interpreter>;
+   auto      code  = make_infinite_loop_wasm_module();
+   backend_t bkend(code, &wa);
+
+   CHECK_THROWS_AS(
+         bkend.timed_run(deferred_execution_thread_interrupt_watchdog{}, [&]() { bkend.call("env", "loop"); }),
+         sysio::vm::timeout_exception);
+}
+
+TEST_CASE("AArch64 JIT cooperative watchdog does not signal the execution thread",
+          "[watchdog_interrupt][jit][aarch64]") {
+   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
+   auto      code  = make_infinite_loop_wasm_module();
+   backend_t bkend(code, &wa);
+
+   CHECK_THROWS_AS(bkend.timed_run(cooperative_timeout_watchdog{},
+                                   []() { std::this_thread::sleep_for(std::chrono::milliseconds(50)); }),
                    sysio::vm::timeout_exception);
 }
 
@@ -153,9 +177,7 @@ TEST_CASE("AArch64 JIT watchdog late signal is reported as timeout", "[watchdog_
    auto      code  = make_return_42_wasm_module();
    backend_t bkend(code, &wa);
 
-   CHECK_THROWS_AS(bkend.timed_run(late_execution_thread_interrupt_watchdog{}, [&]() {
-                      bkend.call("env", "run");
-                   }),
+   CHECK_THROWS_AS(bkend.timed_run(late_execution_thread_interrupt_watchdog{}, [&]() { bkend.call("env", "run"); }),
                    sysio::vm::timeout_exception);
 }
 #endif
