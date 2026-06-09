@@ -32,6 +32,17 @@ namespace sysio { namespace vm {
    /// Points to the timeout state for the timed_run currently executing on this thread.
    inline thread_local std::atomic<bool>* active_timed_run_has_timed_out{nullptr};
 
+   /// Describes where the AArch64 timeout path is relative to VM execution.
+   enum class aarch64_timeout_phase {
+      none,
+      executing_jit,
+      returned_from_jit,
+   };
+
+   __attribute__((visibility("default")))
+   /// Tracks whether a directed AArch64 timeout signal must escape VM execution or may be ignored as late.
+   inline thread_local aarch64_timeout_phase active_aarch64_timeout_phase = aarch64_timeout_phase::none;
+
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default")))
    inline thread_local std::exception_ptr saved_exception{nullptr};
@@ -72,6 +83,11 @@ namespace sysio { namespace vm {
          if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out) {
             goto chain_previous_handler;
          }
+         if constexpr (sys_vm_has_aarch64_jit_backend) {
+            if (sig == SIGSEGV && execution_timed_out) {
+               active_aarch64_timeout_phase = aarch64_timeout_phase::returned_from_jit;
+            }
+         }
          //otherwise, jump out
          siglongjmp(*dest, sig);
 
@@ -79,13 +95,13 @@ namespace sysio { namespace vm {
       }
 
       if constexpr (sys_vm_has_aarch64_jit_backend) {
-         // The AArch64 JIT timeout path interrupts the execution thread with a directed SIGSEGV instead of
-         // revoking code pages. If that signal arrives just after invoke_with_signal_handler has restored
-         // signal_dest, timed_run has already recorded the timeout and will throw after joining the watchdog.
-         // Chaining that late directed signal would terminate the process at the deadline boundary.
+         // The AArch64 timeout path interrupts the execution thread with a directed SIGSEGV instead of revoking
+         // code pages. Only suppress it after VM execution has returned; while VM execution is still active, the
+         // signal must remain an interrupt so tight loops can escape through siglongjmp.
          const bool directed_signal = !info || info->si_code <= 0;
          if (sig == SIGSEGV && directed_signal && active_timed_run_has_timed_out &&
-             active_timed_run_has_timed_out->load(std::memory_order_acquire)) {
+             active_timed_run_has_timed_out->load(std::memory_order_acquire) &&
+             active_aarch64_timeout_phase == aarch64_timeout_phase::returned_from_jit) {
             return;
          }
       }

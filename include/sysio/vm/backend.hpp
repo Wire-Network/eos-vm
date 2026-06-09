@@ -329,8 +329,8 @@ namespace sysio { namespace vm {
 
       template<typename Watchdog, typename F>
       inline void timed_run(Watchdog&& wd, F&& f) {
-         if constexpr (sys_vm_has_aarch64_jit_backend && Impl::is_jit) {
-            // The AArch64 JIT does not use process-wide code-page revocation for timed_run. The watchdog targets
+         if constexpr (sys_vm_has_aarch64_jit_backend) {
+            // The AArch64 backend does not use process-wide code-page revocation for timed_run. The watchdog targets
             // only the execution thread, and the signal handler consults this thread-local pointer before converting
             // the signal into a timeout. This keeps unrelated execution threads from inheriting another run's timeout.
             std::atomic<bool> local_timed_run_has_timed_out{false};
@@ -339,10 +339,13 @@ namespace sysio { namespace vm {
             auto restore_timeout_state = scope_guard{[previous_timed_run_has_timed_out]() {
                active_timed_run_has_timed_out = previous_timed_run_has_timed_out;
             }};
+            const auto previous_timeout_phase = active_aarch64_timeout_phase;
+            active_aarch64_timeout_phase = aarch64_timeout_phase::none;
+            auto restore_timeout_phase = scope_guard{[previous_timeout_phase]() {
+               active_aarch64_timeout_phase = previous_timeout_phase;
+            }};
             try {
                const pthread_t execution_thread = pthread_self();
-               // Sample this policy before scoped_run starts so the watchdog thread does not read wd.
-               const bool interrupt_execution_thread = should_interrupt_execution_thread(wd, 0);
                {
                   sigset_t timeout_signal_mask;
                   sigemptyset(&timeout_signal_mask);
@@ -363,21 +366,23 @@ namespace sysio { namespace vm {
                      }
                   }};
                   auto wd_guard = std::forward<Watchdog>(wd).scoped_run([execution_thread,
-                                                                          interrupt_execution_thread,
+                                                                          &wd,
                                                                           &local_timed_run_has_timed_out]() {
                      local_timed_run_has_timed_out.store(true, std::memory_order_release);
                      // Cooperative fork interruption can run through the same watchdog interface. Only the real
-                     // execution-deadline path should deliver the directed signal into the JIT execution thread.
-                     if (interrupt_execution_thread && !pthread_equal(pthread_self(), execution_thread)) {
+                     // execution-deadline path should deliver the directed signal into the execution thread.
+                     if (should_interrupt_execution_thread(wd, 0) && !pthread_equal(pthread_self(), execution_thread)) {
                         pthread_kill(execution_thread, SIGSEGV);
                      }
                   });
                   if (local_timed_run_has_timed_out.load(std::memory_order_acquire))
                      throw timeout_exception{ "execution timed out" };
+                  active_aarch64_timeout_phase = aarch64_timeout_phase::executing_jit;
                   std::forward<F>(f)();
+                  active_aarch64_timeout_phase = aarch64_timeout_phase::returned_from_jit;
                   // Keep late directed timeout SIGSEGVs pending while wd_guard joins, then drain one before
                   // restoring the thread-local timeout state.
-                  if (interrupt_execution_thread) {
+                  if (should_interrupt_execution_thread(wd, 0)) {
                      pthread_sigmask(SIG_BLOCK, &timeout_signal_mask, &previous_signal_mask);
                      timeout_signal_blocked = true;
                   }
