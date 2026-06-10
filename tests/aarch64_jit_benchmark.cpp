@@ -54,12 +54,12 @@ int main() {
    return 1;
 #else
    wasm_allocator interpreter_allocator;
-   wasm_allocator jit_allocator;
+   wasm_allocator jit_wasm_allocator;
    auto           interpreter_code = make_sum_to_module();
    auto           jit_code         = make_sum_to_module();
 
-   backend<std::nullptr_t, interpreter>           interpreter_backend(interpreter_code, &interpreter_allocator);
-   backend<std::nullptr_t, jit> jit_backend(jit_code, &jit_allocator);
+   backend<std::nullptr_t, interpreter> interpreter_backend(interpreter_code, &interpreter_allocator);
+   backend<std::nullptr_t, jit>         jit_backend(jit_code, &jit_wasm_allocator);
 
    uint64_t     interpreter_checksum = 0;
    uint64_t     jit_checksum         = 0;

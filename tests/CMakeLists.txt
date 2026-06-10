@@ -184,7 +184,7 @@ setup_vm_target(unit_tests)
 target_link_libraries(unit_tests sys-vm Catch2::Catch2)
 target_compile_definitions(unit_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
 
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
    add_executable(aarch64_jit_benchmark aarch64_jit_benchmark.cpp)
    setup_vm_target(aarch64_jit_benchmark)
    target_link_libraries(aarch64_jit_benchmark sys-vm)

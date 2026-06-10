@@ -7,6 +7,7 @@ using namespace sysio::vm;
 extern wasm_allocator wa;
 
 TEST_CASE("JIT capability flags match configured compile definitions", "[config]") {
+   // Documents the public macro-to-constexpr mapping used by downstream integrations.
 #if SYS_VM_HAS_JIT_BACKEND
    CHECK(sys_vm_has_jit_backend);
 #else

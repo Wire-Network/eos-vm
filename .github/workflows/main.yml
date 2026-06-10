@@ -13,6 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Intentional reduced PR matrix: Linux plus current hosted macOS covers interpreter, x86_64 JIT, and Apple
+        # AArch64 JIT without multiplying signal-disposition tests across near-duplicate OS images.
         include:
           - name: Ubuntu 24.04
             runner: ubuntu-24.04

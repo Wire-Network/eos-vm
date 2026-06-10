@@ -13,29 +13,29 @@ using namespace sysio::vm;
 namespace {
 #if defined(__x86_64__)
 /// Native function body that returns 42 on x86_64.
-constexpr unsigned char return_42_code[] = {0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3};
+constexpr unsigned char return_42_code[] = { 0xb8, 0x2a, 0x00, 0x00, 0x00, 0xc3 };
 #elif defined(__aarch64__) || defined(_M_ARM64)
 /// Native function body that returns 42 on AArch64.
-constexpr unsigned char return_42_code[] = {0x40, 0x05, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6};
+constexpr unsigned char return_42_code[] = { 0x40, 0x05, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6 };
 #endif
-}
+} // namespace
 
-template<typename T>
+template <typename T>
 bool check_alignment(T* ptr) {
-   void * p = ptr;
+   void*       p  = ptr;
    std::size_t sz = sizeof(T);
    return std::align(alignof(T), sizeof(T), p, sz) != nullptr;
 }
 
 TEST_CASE("Testing growable_allocator alignment", "[growable_allocator]") {
    growable_allocator alloc(1024);
-   unsigned char * cptr = alloc.alloc<unsigned char>(1);
+   unsigned char*     cptr = alloc.alloc<unsigned char>(1);
    CHECK(check_alignment(cptr));
-   uint16_t * sptr = alloc.alloc<uint16_t>(1);
+   uint16_t* sptr = alloc.alloc<uint16_t>(1);
    CHECK(check_alignment(sptr));
-   uint32_t * iptr = alloc.alloc<uint32_t>(1);
+   uint32_t* iptr = alloc.alloc<uint32_t>(1);
    CHECK(check_alignment(iptr));
-   uint64_t * lptr = alloc.alloc<uint64_t>(1);
+   uint64_t* lptr = alloc.alloc<uint64_t>(1);
    CHECK(check_alignment(lptr));
    *cptr = 0x11u;
    *sptr = 0x2233u;
@@ -49,18 +49,17 @@ TEST_CASE("Testing growable_allocator alignment", "[growable_allocator]") {
 
 TEST_CASE("Testing maximum single allocation", "[growable_allocator]") {
    growable_allocator alloc(0);
-   char * ptr = alloc.alloc<char>(0x40000000);
-   ptr[0] = 'a';
-   ptr[0x3FFFFFFF] = 'z';
+   char*              ptr = alloc.alloc<char>(0x40000000);
+   ptr[0]                 = 'a';
+   ptr[0x3FFFFFFF]        = 'z';
    alloc.alloc<char>(0);
 }
 
-
 TEST_CASE("Testing maximum multiple allocation", "[growable_allocator]") {
    growable_allocator alloc(1024);
-   for(int i = 0; i < 4; ++i) {
-      char * ptr = alloc.alloc<char>(0x10000000);
-      ptr[0] = 'a';
+   for (int i = 0; i < 4; ++i) {
+      char* ptr       = alloc.alloc<char>(0x10000000);
+      ptr[0]          = 'a';
       ptr[0x0FFFFFFF] = 'z';
    }
    alloc.alloc<char>(0);
@@ -81,35 +80,37 @@ TEST_CASE("Testing too large multiple allocation", "[growable_allocator]") {
 
 TEST_CASE("Testing maximum initial size", "[growable_allocator]") {
    growable_allocator alloc(0x40000000);
-   char * ptr = alloc.alloc<char>(0x40000000);
-   ptr[0] = 'a';
-   ptr[0x3FFFFFFF] = 'z';
+   char*              ptr = alloc.alloc<char>(0x40000000);
+   ptr[0]                 = 'a';
+   ptr[0x3FFFFFFF]        = 'z';
 }
 
 TEST_CASE("Testing too large initial size", "[growable_allocator]") {
-   CHECK_THROWS_AS(growable_allocator{0x40000001}, wasm_bad_alloc);
+   CHECK_THROWS_AS(growable_allocator{ 0x40000001 }, wasm_bad_alloc);
    // Check that integer overflow in rounding functions won't cause issues
-   CHECK_THROWS_AS(growable_allocator{0x8000000000000000ull}, wasm_bad_alloc);
-   CHECK_THROWS_AS(growable_allocator{0xFFFFFFFFFFFE0001ull}, wasm_bad_alloc);
-   CHECK_THROWS_AS(growable_allocator{0xFFFFFFFFFFFFFFFFull}, wasm_bad_alloc);
+   CHECK_THROWS_AS(growable_allocator{ 0x8000000000000000ull }, wasm_bad_alloc);
+   CHECK_THROWS_AS(growable_allocator{ 0xFFFFFFFFFFFE0001ull }, wasm_bad_alloc);
+   CHECK_THROWS_AS(growable_allocator{ 0xFFFFFFFFFFFFFFFFull }, wasm_bad_alloc);
 }
 
 TEST_CASE("Testing maximum aligned allocation", "[growable_allocator]") {
    growable_allocator alloc(1024);
-   struct alignas(8) aligned_t { char a[8]; };
+   struct alignas(8) aligned_t {
+      char a[8];
+   };
    alloc.alloc<char>(0x3FFFFFF4);
-   aligned_t * ptr = alloc.alloc<aligned_t>(1);
-   ptr->a[0] = 'a';
-   ptr->a[7] = 'z';
+   aligned_t* ptr = alloc.alloc<aligned_t>(1);
+   ptr->a[0]      = 'a';
+   ptr->a[7]      = 'z';
    alloc.alloc<aligned_t>(0);
    CHECK_THROWS_AS(alloc.alloc<char>(1), wasm_bad_alloc);
 }
 
 TEST_CASE("Testing reclaim", "[growable_allocator]") {
    growable_allocator alloc(1024);
-   int * ptr1 = alloc.alloc<int>(10);
+   int*               ptr1 = alloc.alloc<int>(10);
    alloc.reclaim(ptr1 + 2, 8);
-   int * ptr2 = alloc.alloc<int>(10);
+   int* ptr2 = alloc.alloc<int>(10);
    CHECK(ptr2 == ptr1 + 2);
 }
 
@@ -178,41 +179,69 @@ TEST_CASE("Testing JIT code copy, disable, and re-enable", "[growable_allocator]
    alloc.use_fixed_memory(4096);
 
    void* code_base = alloc.start_code();
-   auto* code = alloc.alloc<unsigned char>(sizeof(return_42_code));
+   auto* code      = alloc.alloc<unsigned char>(sizeof(return_42_code));
    std::memcpy(code, return_42_code, sizeof(return_42_code));
    alloc.end_code<true>(code_base);
 
    using return_42_fn = int (*)();
-   auto* fn = reinterpret_cast<return_42_fn>(const_cast<void*>(alloc.get_code_start()));
+   auto* fn           = reinterpret_cast<return_42_fn>(const_cast<void*>(alloc.get_code_start()));
    CHECK(fn() == 42);
 
-   bool interrupted = false;
-   bool disabled = alloc.disable_code();
-   bool old_timed_run_has_timed_out = timed_run_has_timed_out.exchange(true, std::memory_order_acq_rel);
+   bool               interrupted                 = false;
+   bool               disabled                    = alloc.disable_code();
+   bool               old_timed_run_has_timed_out = timed_run_has_timed_out.exchange(true, std::memory_order_acq_rel);
    std::atomic<bool>* old_active_timed_run_has_timed_out = active_timed_run_has_timed_out;
-   active_timed_run_has_timed_out = &timed_run_has_timed_out;
-   auto restore_timed_run_has_timed_out = scope_guard{[old_timed_run_has_timed_out]() {
+   active_timed_run_has_timed_out                        = &timed_run_has_timed_out;
+   auto restore_timed_run_has_timed_out                  = scope_guard{ [old_timed_run_has_timed_out]() {
       timed_run_has_timed_out.store(old_timed_run_has_timed_out, std::memory_order_release);
-   }};
-   auto restore_active_timed_run_has_timed_out = scope_guard{[old_active_timed_run_has_timed_out]() {
+   } };
+   auto restore_active_timed_run_has_timed_out = scope_guard{ [old_active_timed_run_has_timed_out]() {
       active_timed_run_has_timed_out = old_active_timed_run_has_timed_out;
-   }};
+   } };
    if (disabled) {
-      invoke_with_signal_handler([&]() {
-         (void)fn();
-      }, [&](int sig) {
-         interrupted = sig == SIGSEGV || sig == SIGBUS || sig == SIGILL;
-      }, alloc, nullptr);
+      invoke_with_signal_handler([&]() { (void)fn(); },
+                                 [&](int sig) { interrupted = sig == SIGSEGV || sig == SIGBUS || sig == SIGILL; },
+                                 alloc, nullptr);
    } else {
-      invoke_with_signal_handler([&]() {
-         pthread_kill(pthread_self(), SIGSEGV);
-      }, [&](int sig) {
-         interrupted = sig == SIGSEGV;
-      }, alloc, nullptr);
+      invoke_with_signal_handler([&]() { pthread_kill(pthread_self(), SIGSEGV); },
+                                 [&](int sig) { interrupted = sig == SIGSEGV; }, alloc, nullptr);
    }
 
    CHECK(interrupted);
    CHECK(alloc.enable_code(true));
+   CHECK(fn() == 42);
+#else
+   SUCCEED("No native code stub is defined for this architecture");
+#endif
+}
+
+TEST_CASE("Destroying disabled JIT code re-enables pages before returning them to the allocator pool",
+          "[growable_allocator]") {
+#if defined(__x86_64__) || defined(__aarch64__) || defined(_M_ARM64)
+   {
+      growable_allocator alloc;
+      alloc.use_fixed_memory(4096);
+
+      void* code_base = alloc.start_code();
+      auto* code      = alloc.alloc<unsigned char>(sizeof(return_42_code));
+      std::memcpy(code, return_42_code, sizeof(return_42_code));
+      alloc.end_code<true>(code_base);
+      if (!alloc.disable_code()) {
+         SUCCEED("This platform does not allow disabling the generated code stub");
+         return;
+      }
+   }
+
+   growable_allocator alloc;
+   alloc.use_fixed_memory(4096);
+
+   void* code_base = alloc.start_code();
+   auto* code      = alloc.alloc<unsigned char>(sizeof(return_42_code));
+   std::memcpy(code, return_42_code, sizeof(return_42_code));
+   alloc.end_code<true>(code_base);
+
+   using return_42_fn = int (*)();
+   auto* fn           = reinterpret_cast<return_42_fn>(const_cast<void*>(alloc.get_code_start()));
    CHECK(fn() == 42);
 #else
    SUCCEED("No native code stub is defined for this architecture");

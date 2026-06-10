@@ -41,7 +41,7 @@ namespace sysio { namespace vm {
          void*       address = nullptr;
          branch_kind kind    = branch_kind::b;
          // For CBZ/CBNZ this is the tested register; for B.cond this is the condition code.
-         uint32_t    reg     = 0;
+         uint32_t reg = 0;
       };
       using label_t = void*;
 
@@ -131,11 +131,12 @@ namespace sysio { namespace vm {
          }
 
          aarch64_machine_code_writer* _this       = nullptr;
-         uint32_t                      _case_index = 0;
+         uint32_t                     _case_index = 0;
       };
 
       /// Emits a br_table selector pop and returns the case parser.
-      br_table_parser emit_br_table(uint32_t) {
+      br_table_parser emit_br_table(uint32_t /*table_size*/) {
+         // TODO: Replace linear br_table dispatch with a jump-table lowering when code-size and range handling allow.
          pop_x(scratch0);
          return { this, 0 };
       }
@@ -199,7 +200,7 @@ namespace sysio { namespace vm {
       /// Drops the top value from the native operand stack.
       void emit_drop() { pop_x(scratch0); }
 
-      /// Emits a WASM select for integer value slots.
+      /// Emits a WASM select for scalar slots.
       void emit_select() {
          pop_x(scratch0);
          pop_x(scratch1);
@@ -211,24 +212,21 @@ namespace sysio { namespace vm {
 
       /// Loads a local or parameter slot onto the native operand stack.
       void emit_get_local(uint32_t local_idx) {
-         SYS_VM_ASSERT(local_idx < _local_slot_count, wasm_parse_exception,
-                       "AArch64 JIT local index out of range");
+         SYS_VM_ASSERT(local_idx < _local_slot_count, wasm_parse_exception, "AArch64 JIT local index out of range");
          load_local(local_idx, scratch0);
          push_x(scratch0);
       }
 
       /// Stores the top native operand stack value into a local or parameter slot.
       void emit_set_local(uint32_t local_idx) {
-         SYS_VM_ASSERT(local_idx < _local_slot_count, wasm_parse_exception,
-                       "AArch64 JIT local index out of range");
+         SYS_VM_ASSERT(local_idx < _local_slot_count, wasm_parse_exception, "AArch64 JIT local index out of range");
          pop_x(scratch0);
          store_local(local_idx, scratch0);
       }
 
       /// Stores the top native operand stack value into a local slot without consuming it.
       void emit_tee_local(uint32_t local_idx) {
-         SYS_VM_ASSERT(local_idx < _local_slot_count, wasm_parse_exception,
-                       "AArch64 JIT local index out of range");
+         SYS_VM_ASSERT(local_idx < _local_slot_count, wasm_parse_exception, "AArch64 JIT local index out of range");
          pop_x(scratch0);
          push_x(scratch0);
          store_local(local_idx, scratch0);
@@ -283,7 +281,10 @@ namespace sysio { namespace vm {
       }
 
       /// Emits an f32 memory load as raw bits in a native_value slot.
-      void emit_f32_load(uint32_t, uint32_t offset) { emit_i32_load(0, offset); }
+      void emit_f32_load(uint32_t, uint32_t offset) {
+         require_softfloat("f32.load");
+         emit_i32_load(0, offset);
+      }
 
       /// Emits an i64 memory load.
       void emit_i64_load(uint32_t, uint32_t offset) {
@@ -293,7 +294,10 @@ namespace sysio { namespace vm {
       }
 
       /// Emits an f64 memory load as raw bits in a native_value slot.
-      void emit_f64_load(uint32_t, uint32_t offset) { emit_i64_load(0, offset); }
+      void emit_f64_load(uint32_t, uint32_t offset) {
+         require_softfloat("f64.load");
+         emit_i64_load(0, offset);
+      }
 
       /// Emits a sign-extending i8-to-i32 memory load.
       void emit_i32_load8_s(uint32_t, uint32_t offset) { emit_narrow_integer_load(offset, 0x39c00000u); }
@@ -337,7 +341,10 @@ namespace sysio { namespace vm {
       }
 
       /// Emits an f32 memory store from raw bits in a native_value slot.
-      void emit_f32_store(uint32_t, uint32_t offset) { emit_i32_store(0, offset); }
+      void emit_f32_store(uint32_t, uint32_t offset) {
+         require_softfloat("f32.store");
+         emit_i32_store(0, offset);
+      }
 
       /// Emits an i64 memory store.
       void emit_i64_store(uint32_t, uint32_t offset) {
@@ -347,7 +354,10 @@ namespace sysio { namespace vm {
       }
 
       /// Emits an f64 memory store from raw bits in a native_value slot.
-      void emit_f64_store(uint32_t, uint32_t offset) { emit_i64_store(0, offset); }
+      void emit_f64_store(uint32_t, uint32_t offset) {
+         require_softfloat("f64.store");
+         emit_i64_store(0, offset);
+      }
 
       /// Emits an i32 low-byte memory store.
       void emit_i32_store8(uint32_t, uint32_t offset) { emit_narrow_integer_store(offset, 0x39000000u); }
@@ -400,6 +410,7 @@ namespace sysio { namespace vm {
 
       /// Emits an f32 constant as a raw bit-pattern native_value slot.
       void emit_f32_const(float value) {
+         require_softfloat("f32.const");
          uint32_t bits = 0;
          std::memcpy(&bits, &value, sizeof(bits));
          emit_i32_const(bits);
@@ -407,6 +418,7 @@ namespace sysio { namespace vm {
 
       /// Emits an f64 constant as a raw bit-pattern native_value slot.
       void emit_f64_const(double value) {
+         require_softfloat("f64.const");
          uint64_t bits = 0;
          std::memcpy(&bits, &value, sizeof(bits));
          emit_i64_const(bits);
@@ -756,16 +768,16 @@ namespace sysio { namespace vm {
       void emit_f64_promote_f32() { emit_value_unop_helper(true, &soft_f32_promote_f64); }
 
       /// Emits i32.reinterpret_f32 without changing the raw native_value slot.
-      void emit_i32_reinterpret_f32() {}
+      void emit_i32_reinterpret_f32() { require_softfloat("i32.reinterpret_f32"); }
 
       /// Emits i64.reinterpret_f64 without changing the raw native_value slot.
-      void emit_i64_reinterpret_f64() {}
+      void emit_i64_reinterpret_f64() { require_softfloat("i64.reinterpret_f64"); }
 
       /// Emits f32.reinterpret_i32 without changing the raw native_value slot.
-      void emit_f32_reinterpret_i32() {}
+      void emit_f32_reinterpret_i32() { require_softfloat("f32.reinterpret_i32"); }
 
       /// Emits f64.reinterpret_i64 without changing the raw native_value slot.
-      void emit_f64_reinterpret_i64() {}
+      void emit_f64_reinterpret_i64() { require_softfloat("f64.reinterpret_i64"); }
 
       /// Emits i64 left shift.
       void emit_i64_shl() { emit_integer_shift(true, 0x9ac02000u); }
@@ -879,38 +891,38 @@ namespace sysio { namespace vm {
       const void* get_base_addr() const { return _code_segment_base; }
 
     private:
-      static constexpr uint32_t    scratch0                        = 9;
-      static constexpr uint32_t    scratch1                        = 10;
-      static constexpr uint32_t    scratch2                        = 11;
-      static constexpr uint32_t    scratch3                        = 12;
-      static constexpr uint32_t    scratch4                        = 13;
-      static constexpr uint32_t    incoming_linear_memory_reg      = 1;
-      static constexpr uint32_t    linear_memory_reg               = 19;
-      static constexpr uint32_t    args_reg                        = 2;
-      static constexpr uint32_t    frame_reg                       = 29;
-      static constexpr uint32_t    zero_reg                        = 31;
-      static constexpr uint32_t    stack_reg                       = 31;
-      static constexpr uint32_t    return_reg                      = 0;
-      static constexpr uint32_t    local_slot_bytes                = sizeof(native_value);
-      static constexpr uint32_t    operand_stack_slot_bytes        = 16;
-      static constexpr uint32_t    hidden_frame_slot_count         = 3;
-      static constexpr uint32_t    max_aligned_sp_adjustment_bytes = 4080;
-      static constexpr uint32_t    max_unsigned_x_offset_bytes     = 4095 * local_slot_bytes;
-      static constexpr uint32_t    condition_eq                    = 0;
-      static constexpr uint32_t    condition_ne                    = 1;
-      static constexpr uint32_t    condition_hs                    = 2;
-      static constexpr uint32_t    condition_lo                    = 3;
-      static constexpr uint32_t    condition_hi                    = 8;
-      static constexpr uint32_t    condition_ls                    = 9;
-      static constexpr uint32_t    condition_ge                    = 10;
-      static constexpr uint32_t    condition_lt                    = 11;
-      static constexpr uint32_t    condition_gt                    = 12;
-      static constexpr uint32_t    condition_le                    = 13;
-      static constexpr std::size_t initial_function_code_bytes     = 4096;
-      static constexpr std::size_t function_code_growth_bytes      = 4096;
-      static constexpr std::size_t function_code_margin_bytes      = 1024;
-      static constexpr std::size_t function_code_size_ratio        = 128;
-      static constexpr std::size_t local_zeroing_code_bytes        = 32;
+      static constexpr uint32_t    scratch0                           = 9;
+      static constexpr uint32_t    scratch1                           = 10;
+      static constexpr uint32_t    scratch2                           = 11;
+      static constexpr uint32_t    scratch3                           = 12;
+      static constexpr uint32_t    scratch4                           = 13;
+      static constexpr uint32_t    incoming_linear_memory_reg         = 1;
+      static constexpr uint32_t    linear_memory_reg                  = 19;
+      static constexpr uint32_t    args_reg                           = 2;
+      static constexpr uint32_t    frame_reg                          = 29;
+      static constexpr uint32_t    zero_reg                           = 31;
+      static constexpr uint32_t    stack_reg                          = 31;
+      static constexpr uint32_t    return_reg                         = 0;
+      static constexpr uint32_t    local_slot_bytes                   = sizeof(native_value);
+      static constexpr uint32_t    operand_stack_slot_bytes           = 16;
+      static constexpr uint32_t    hidden_frame_slot_count            = 3;
+      static constexpr uint32_t    max_aligned_sp_adjustment_bytes    = 4080;
+      static constexpr uint32_t    max_scaled_unsigned_x_offset_bytes = 4095 * local_slot_bytes;
+      static constexpr uint32_t    condition_eq                       = 0;
+      static constexpr uint32_t    condition_ne                       = 1;
+      static constexpr uint32_t    condition_hs                       = 2;
+      static constexpr uint32_t    condition_lo                       = 3;
+      static constexpr uint32_t    condition_hi                       = 8;
+      static constexpr uint32_t    condition_ls                       = 9;
+      static constexpr uint32_t    condition_ge                       = 10;
+      static constexpr uint32_t    condition_lt                       = 11;
+      static constexpr uint32_t    condition_gt                       = 12;
+      static constexpr uint32_t    condition_le                       = 13;
+      static constexpr std::size_t initial_function_code_bytes        = 4096;
+      static constexpr std::size_t function_code_growth_bytes         = 4096;
+      static constexpr std::size_t function_code_margin_bytes         = 1024;
+      static constexpr std::size_t function_code_size_ratio           = 128;
+      static constexpr std::size_t local_zeroing_code_bytes           = 32;
       static_assert(local_slot_bytes == 8, "AArch64 JIT expects 8-byte native value slots");
       static_assert(max_aligned_sp_adjustment_bytes <= 4095, "AArch64 SP adjustment chunk must fit imm12");
       static_assert((max_aligned_sp_adjustment_bytes % 16) == 0, "AArch64 SP adjustment chunk must keep SP aligned");
@@ -924,15 +936,16 @@ namespace sysio { namespace vm {
       static constexpr uint32_t align_to_16(uint32_t size) { return (size + 15u) & ~15u; }
 
       /// Throws a parse exception for an unsupported AArch64 operation.
-      [[noreturn]] static void unsupported(const char* opcode) {
-         throw wasm_parse_exception{ opcode };
+      [[noreturn]] static void unsupported(const char* opcode) { throw wasm_parse_exception{ opcode }; }
+
+      /// Fails while emitting float opcodes when deterministic softfloat helpers are not compiled in.
+      static void require_softfloat(const char* opcode) {
+#ifndef SYS_VM_SOFTFLOAT
+         unsupported(opcode);
+#else
+         (void)opcode;
+#endif
       }
-
-      /// Throws a parse exception and satisfies branch-typed parser expressions.
-      [[noreturn]] static branch_t unsupported_branch(const char* opcode) { unsupported(opcode); }
-
-      /// Throws a parse exception and satisfies label-typed parser expressions.
-      [[noreturn]] static label_t unsupported_label(const char* opcode) { unsupported(opcode); }
 
       /// Emits a raw little-endian AArch64 instruction.
       void emit_u32(uint32_t instruction) {
@@ -1044,8 +1057,7 @@ namespace sysio { namespace vm {
          SYS_VM_ASSERT((byte_offset % 4) == 0, wasm_parse_exception,
                        "AArch64 JIT i32 load offset must be 4-byte aligned");
          const uint32_t scaled_offset = byte_offset / 4;
-         SYS_VM_ASSERT(scaled_offset <= 4095, wasm_parse_exception,
-                       "AArch64 JIT i32 load offset is too large");
+         SYS_VM_ASSERT(scaled_offset <= 4095, wasm_parse_exception, "AArch64 JIT i32 load offset is too large");
          emit_u32(0xb9400000u | (scaled_offset << 10) | (base << 5) | dst);
       }
 
@@ -1071,7 +1083,7 @@ namespace sysio { namespace vm {
 
       /// Loads an X register from an arbitrary aligned byte offset above the native stack pointer.
       void emit_ldr_x_stack_offset(uint32_t dst, uint32_t byte_offset) {
-         if (byte_offset <= max_unsigned_x_offset_bytes) {
+         if (byte_offset <= max_scaled_unsigned_x_offset_bytes) {
             emit_ldr_x_unsigned(dst, stack_reg, byte_offset);
             return;
          }
@@ -1082,7 +1094,7 @@ namespace sysio { namespace vm {
 
       /// Stores an X register to an arbitrary aligned byte offset above the native stack pointer.
       void emit_str_x_stack_offset(uint32_t src, uint32_t byte_offset) {
-         if (byte_offset <= max_unsigned_x_offset_bytes) {
+         if (byte_offset <= max_scaled_unsigned_x_offset_bytes) {
             emit_str_x_unsigned(src, stack_reg, byte_offset);
             return;
          }
@@ -1105,6 +1117,7 @@ namespace sysio { namespace vm {
          }
 
          for (uint32_t i = 0; i < param_count; ++i) {
+            // Output slot i maps to source argument i for direct calls and to reversed host-stack order for imports.
             const uint32_t source_arg    = layout == call_arg_layout::parameter_order ? i : (param_count - 1u - i);
             const uint32_t source_offset = args_bytes + ((param_count - 1u - source_arg) * operand_stack_slot_bytes);
             emit_ldr_x_stack_offset(scratch0, source_offset);
@@ -1119,8 +1132,7 @@ namespace sysio { namespace vm {
          SYS_VM_ASSERT((byte_offset % 4) == 0, wasm_parse_exception,
                        "AArch64 JIT i32 store offset must be 4-byte aligned");
          const uint32_t scaled_offset = byte_offset / 4;
-         SYS_VM_ASSERT(scaled_offset <= 4095, wasm_parse_exception,
-                       "AArch64 JIT i32 store offset is too large");
+         SYS_VM_ASSERT(scaled_offset <= 4095, wasm_parse_exception, "AArch64 JIT i32 store offset is too large");
          emit_u32(0xb9000000u | (scaled_offset << 10) | (base << 5) | src);
       }
 
@@ -1146,6 +1158,7 @@ namespace sysio { namespace vm {
       /// Pops a WASM i32 address and resolves it to a native linear-memory address.
       void load_memory_address(uint32_t offset, uint32_t offset_reg = scratch1) {
          pop_x(scratch0);
+         emit_zero_extend_w(scratch0);
          if (offset <= 4095) {
             emit_add_imm(scratch0, scratch0, offset);
          } else {
@@ -1278,9 +1291,7 @@ namespace sysio { namespace vm {
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
 
       /// Produces a readable failure when a float opcode is reached without softfloat support.
-      [[noreturn]] static void softfloat_disabled(const char* opcode) {
-         throw wasm_parse_exception{ opcode };
-      }
+      [[noreturn]] static void softfloat_disabled(const char* opcode) { throw wasm_parse_exception{ opcode }; }
 
       /// Runs a trap-capable softfloat conversion behind the JIT longjmp boundary.
       template <typename Result, typename Function>
@@ -1291,24 +1302,48 @@ namespace sysio { namespace vm {
       }
 
 #ifdef SYS_VM_SOFTFLOAT
-      static float bits_to_f32(uint32_t bits) { return ::from_softfloat32(softfloat32_t{ bits }); }
-      static double bits_to_f64(uint64_t bits) { return ::from_softfloat64(softfloat64_t{ bits }); }
+      static float    bits_to_f32(uint32_t bits) { return ::from_softfloat32(softfloat32_t{ bits }); }
+      static double   bits_to_f64(uint64_t bits) { return ::from_softfloat64(softfloat64_t{ bits }); }
       static uint32_t f32_to_bits(float value) { return ::to_softfloat32(value).v; }
       static uint64_t f64_to_bits(double value) { return ::to_softfloat64(value).v; }
 
       /// Raw-bit host adapters for the existing interpreter softfloat implementation.
-      static uint32_t soft_f32_eq(uint32_t lhs, uint32_t rhs) { return _sysio_f32_eq(bits_to_f32(lhs), bits_to_f32(rhs)); }
-      static uint32_t soft_f32_ne(uint32_t lhs, uint32_t rhs) { return _sysio_f32_ne(bits_to_f32(lhs), bits_to_f32(rhs)); }
-      static uint32_t soft_f32_lt(uint32_t lhs, uint32_t rhs) { return _sysio_f32_lt(bits_to_f32(lhs), bits_to_f32(rhs)); }
-      static uint32_t soft_f32_gt(uint32_t lhs, uint32_t rhs) { return _sysio_f32_gt(bits_to_f32(lhs), bits_to_f32(rhs)); }
-      static uint32_t soft_f32_le(uint32_t lhs, uint32_t rhs) { return _sysio_f32_le(bits_to_f32(lhs), bits_to_f32(rhs)); }
-      static uint32_t soft_f32_ge(uint32_t lhs, uint32_t rhs) { return _sysio_f32_ge(bits_to_f32(lhs), bits_to_f32(rhs)); }
-      static uint32_t soft_f64_eq(uint64_t lhs, uint64_t rhs) { return _sysio_f64_eq(bits_to_f64(lhs), bits_to_f64(rhs)); }
-      static uint32_t soft_f64_ne(uint64_t lhs, uint64_t rhs) { return _sysio_f64_ne(bits_to_f64(lhs), bits_to_f64(rhs)); }
-      static uint32_t soft_f64_lt(uint64_t lhs, uint64_t rhs) { return _sysio_f64_lt(bits_to_f64(lhs), bits_to_f64(rhs)); }
-      static uint32_t soft_f64_gt(uint64_t lhs, uint64_t rhs) { return _sysio_f64_gt(bits_to_f64(lhs), bits_to_f64(rhs)); }
-      static uint32_t soft_f64_le(uint64_t lhs, uint64_t rhs) { return _sysio_f64_le(bits_to_f64(lhs), bits_to_f64(rhs)); }
-      static uint32_t soft_f64_ge(uint64_t lhs, uint64_t rhs) { return _sysio_f64_ge(bits_to_f64(lhs), bits_to_f64(rhs)); }
+      static uint32_t soft_f32_eq(uint32_t lhs, uint32_t rhs) {
+         return _sysio_f32_eq(bits_to_f32(lhs), bits_to_f32(rhs));
+      }
+      static uint32_t soft_f32_ne(uint32_t lhs, uint32_t rhs) {
+         return _sysio_f32_ne(bits_to_f32(lhs), bits_to_f32(rhs));
+      }
+      static uint32_t soft_f32_lt(uint32_t lhs, uint32_t rhs) {
+         return _sysio_f32_lt(bits_to_f32(lhs), bits_to_f32(rhs));
+      }
+      static uint32_t soft_f32_gt(uint32_t lhs, uint32_t rhs) {
+         return _sysio_f32_gt(bits_to_f32(lhs), bits_to_f32(rhs));
+      }
+      static uint32_t soft_f32_le(uint32_t lhs, uint32_t rhs) {
+         return _sysio_f32_le(bits_to_f32(lhs), bits_to_f32(rhs));
+      }
+      static uint32_t soft_f32_ge(uint32_t lhs, uint32_t rhs) {
+         return _sysio_f32_ge(bits_to_f32(lhs), bits_to_f32(rhs));
+      }
+      static uint32_t soft_f64_eq(uint64_t lhs, uint64_t rhs) {
+         return _sysio_f64_eq(bits_to_f64(lhs), bits_to_f64(rhs));
+      }
+      static uint32_t soft_f64_ne(uint64_t lhs, uint64_t rhs) {
+         return _sysio_f64_ne(bits_to_f64(lhs), bits_to_f64(rhs));
+      }
+      static uint32_t soft_f64_lt(uint64_t lhs, uint64_t rhs) {
+         return _sysio_f64_lt(bits_to_f64(lhs), bits_to_f64(rhs));
+      }
+      static uint32_t soft_f64_gt(uint64_t lhs, uint64_t rhs) {
+         return _sysio_f64_gt(bits_to_f64(lhs), bits_to_f64(rhs));
+      }
+      static uint32_t soft_f64_le(uint64_t lhs, uint64_t rhs) {
+         return _sysio_f64_le(bits_to_f64(lhs), bits_to_f64(rhs));
+      }
+      static uint32_t soft_f64_ge(uint64_t lhs, uint64_t rhs) {
+         return _sysio_f64_ge(bits_to_f64(lhs), bits_to_f64(rhs));
+      }
 
       static uint32_t soft_f32_abs(uint32_t value) { return f32_to_bits(_sysio_f32_abs(bits_to_f32(value))); }
       static uint32_t soft_f32_neg(uint32_t value) { return f32_to_bits(_sysio_f32_neg(bits_to_f32(value))); }
@@ -1369,40 +1404,54 @@ namespace sysio { namespace vm {
       static uint64_t soft_f64_nearest(uint64_t bits) { return f64_to_bits(_sysio_f64_nearest(bits_to_f64(bits))); }
 
       static uint32_t soft_f32_trunc_i32s(uint32_t bits) {
-         return trap_softfloat<uint32_t>([&]() { return static_cast<uint32_t>(_sysio_f32_trunc_i32s(bits_to_f32(bits))); });
+         return trap_softfloat<uint32_t>(
+               [&]() { return static_cast<uint32_t>(_sysio_f32_trunc_i32s(bits_to_f32(bits))); });
       }
       static uint32_t soft_f32_trunc_i32u(uint32_t bits) {
          return trap_softfloat<uint32_t>([&]() { return _sysio_f32_trunc_i32u(bits_to_f32(bits)); });
       }
       static uint32_t soft_f64_trunc_i32s(uint64_t bits) {
-         return trap_softfloat<uint32_t>([&]() { return static_cast<uint32_t>(_sysio_f64_trunc_i32s(bits_to_f64(bits))); });
+         return trap_softfloat<uint32_t>(
+               [&]() { return static_cast<uint32_t>(_sysio_f64_trunc_i32s(bits_to_f64(bits))); });
       }
       static uint32_t soft_f64_trunc_i32u(uint64_t bits) {
          return trap_softfloat<uint32_t>([&]() { return _sysio_f64_trunc_i32u(bits_to_f64(bits)); });
       }
       static uint64_t soft_f32_trunc_i64s(uint32_t bits) {
-         return trap_softfloat<uint64_t>([&]() { return static_cast<uint64_t>(_sysio_f32_trunc_i64s(bits_to_f32(bits))); });
+         return trap_softfloat<uint64_t>(
+               [&]() { return static_cast<uint64_t>(_sysio_f32_trunc_i64s(bits_to_f32(bits))); });
       }
       static uint64_t soft_f32_trunc_i64u(uint32_t bits) {
          return trap_softfloat<uint64_t>([&]() { return _sysio_f32_trunc_i64u(bits_to_f32(bits)); });
       }
       static uint64_t soft_f64_trunc_i64s(uint64_t bits) {
-         return trap_softfloat<uint64_t>([&]() { return static_cast<uint64_t>(_sysio_f64_trunc_i64s(bits_to_f64(bits))); });
+         return trap_softfloat<uint64_t>(
+               [&]() { return static_cast<uint64_t>(_sysio_f64_trunc_i64s(bits_to_f64(bits))); });
       }
       static uint64_t soft_f64_trunc_i64u(uint64_t bits) {
          return trap_softfloat<uint64_t>([&]() { return _sysio_f64_trunc_i64u(bits_to_f64(bits)); });
       }
 
-      static uint32_t soft_i32_to_f32(uint32_t value) { return f32_to_bits(_sysio_i32_to_f32(static_cast<int32_t>(value))); }
+      static uint32_t soft_i32_to_f32(uint32_t value) {
+         return f32_to_bits(_sysio_i32_to_f32(static_cast<int32_t>(value)));
+      }
       static uint32_t soft_ui32_to_f32(uint32_t value) { return f32_to_bits(_sysio_ui32_to_f32(value)); }
-      static uint32_t soft_i64_to_f32(uint64_t value) { return f32_to_bits(_sysio_i64_to_f32(static_cast<int64_t>(value))); }
+      static uint32_t soft_i64_to_f32(uint64_t value) {
+         return f32_to_bits(_sysio_i64_to_f32(static_cast<int64_t>(value)));
+      }
       static uint32_t soft_ui64_to_f32(uint64_t value) { return f32_to_bits(_sysio_ui64_to_f32(value)); }
       static uint32_t soft_f64_demote_f32(uint64_t value) { return f32_to_bits(_sysio_f64_demote(bits_to_f64(value))); }
-      static uint64_t soft_i32_to_f64(uint32_t value) { return f64_to_bits(_sysio_i32_to_f64(static_cast<int32_t>(value))); }
+      static uint64_t soft_i32_to_f64(uint32_t value) {
+         return f64_to_bits(_sysio_i32_to_f64(static_cast<int32_t>(value)));
+      }
       static uint64_t soft_ui32_to_f64(uint32_t value) { return f64_to_bits(_sysio_ui32_to_f64(value)); }
-      static uint64_t soft_i64_to_f64(uint64_t value) { return f64_to_bits(_sysio_i64_to_f64(static_cast<int64_t>(value))); }
+      static uint64_t soft_i64_to_f64(uint64_t value) {
+         return f64_to_bits(_sysio_i64_to_f64(static_cast<int64_t>(value)));
+      }
       static uint64_t soft_ui64_to_f64(uint64_t value) { return f64_to_bits(_sysio_ui64_to_f64(value)); }
-      static uint64_t soft_f32_promote_f64(uint32_t value) { return f64_to_bits(_sysio_f32_promote(bits_to_f32(value))); }
+      static uint64_t soft_f32_promote_f64(uint32_t value) {
+         return f64_to_bits(_sysio_f32_promote(bits_to_f32(value)));
+      }
 #else
       static uint32_t soft_f32_eq(uint32_t, uint32_t) { softfloat_disabled("f32.eq"); }
       static uint32_t soft_f32_ne(uint32_t, uint32_t) { softfloat_disabled("f32.ne"); }
@@ -1504,12 +1553,10 @@ namespace sysio { namespace vm {
                           "call_indirect incorrect function type");
             const uint32_t imported_count = jit_module.get_imported_functions_size();
             if (funcnum < imported_count) {
-               const auto&               ft = jit_module.get_function_type(funcnum);
-               std::vector<native_value> imported_stack(ft.param_types.size());
-               for (uint32_t i = 0; i < ft.param_types.size(); ++i) {
-                  imported_stack[i] = stack[ft.param_types.size() - i - 1];
-               }
-               result = context->call_host_function(imported_stack.data(), funcnum);
+               const auto&  ft          = jit_module.get_function_type(funcnum);
+               const size_t param_count = ft.param_types.size();
+               for (size_t i = 0; i < param_count / 2; ++i) { std::swap(stack[i], stack[param_count - i - 1]); }
+               result = context->call_host_function(stack, funcnum);
             } else {
                using jit_fn_type = native_value (*)(void*, void*, native_value*);
                auto* code        = reinterpret_cast<unsigned char*>(full_module.allocator._code_base) +
@@ -1794,6 +1841,7 @@ namespace sysio { namespace vm {
       }
 
       /// Encodes a 64-bit immediate into an X register using movz/movk.
+      /// TODO: Consider MOVN for dense 0xffff... constants to reduce code size.
       void emit_mov_x_imm(uint64_t value, uint32_t reg) {
          emit_u32(0xd2800000u | (static_cast<uint32_t>(value & 0xffffu) << 5) | reg);
          for (uint32_t chunk = 1; chunk < 4; ++chunk) {
@@ -1846,6 +1894,7 @@ namespace sysio { namespace vm {
             emit_zero_extend_w(return_reg);
          }
          push_x(return_reg);
+         // TODO: Audit helper-backed ops and remove dead context/linear-memory reloads where consumers reload them.
          load_context();
          load_linear_memory();
       }
@@ -1853,12 +1902,21 @@ namespace sysio { namespace vm {
       /// Alias for helper-backed integer unary operations at integer opcode call sites.
       template <typename Function>
       void emit_integer_unop_helper(bool is_64_bit, Function helper) {
-         emit_value_unop_helper(is_64_bit, helper);
+         pop_x(scratch0);
+         emit_mov_x_reg(0, scratch0);
+         emit_call_helper(helper);
+         if (!is_64_bit) {
+            emit_zero_extend_w(return_reg);
+         }
+         push_x(return_reg);
+         load_context();
+         load_linear_memory();
       }
 
       /// Emits a helper-backed unary operation with raw native_value slots.
       template <typename Function>
       void emit_value_unop_helper(bool result_is_64_bit, Function helper) {
+         require_softfloat("float unary helper");
          pop_x(scratch0);
          emit_mov_x_reg(0, scratch0);
          emit_call_helper(helper);
@@ -1873,6 +1931,7 @@ namespace sysio { namespace vm {
       /// Emits a helper-backed floating-point comparison whose helper returns i32 0/1.
       template <typename Function>
       void emit_float_compare(bool /*is_f64*/, Function helper) {
+         require_softfloat("float compare helper");
          pop_x(scratch0);
          pop_x(scratch1);
          emit_mov_x_reg(0, scratch1);
@@ -1887,6 +1946,7 @@ namespace sysio { namespace vm {
       /// Emits a helper-backed floating-point binary operation using raw bit-pattern operands.
       template <typename Function>
       void emit_float_binop(bool result_is_64_bit, Function helper) {
+         require_softfloat("float binary helper");
          pop_x(scratch0);
          pop_x(scratch1);
          emit_mov_x_reg(0, scratch1);
@@ -1905,14 +1965,13 @@ namespace sysio { namespace vm {
          pop_x(scratch0);
          pop_x(scratch1);
          emit_u32(opcode_base | (scratch0 << 16) | (scratch1 << 5) | scratch0);
-         if (!is_64_bit) {
-            emit_zero_extend_w(scratch0);
-         }
+         (void)is_64_bit;
          push_x(scratch0);
       }
 
       /// Emits a call-depth reservation before a generated direct or indirect call.
       void emit_enter_call() {
+         // TODO: Consider inlining AArch64 call-depth tracking to avoid C-call overhead on every generated call.
          load_context();
          emit_call_helper(&enter_call);
          load_context();
@@ -1933,9 +1992,6 @@ namespace sysio { namespace vm {
          pop_x(scratch1);
          emit_neg_reg(is_64_bit, scratch0);
          emit_u32((is_64_bit ? 0x9ac02c00u : 0x1ac02c00u) | (scratch0 << 16) | (scratch1 << 5) | scratch0);
-         if (!is_64_bit) {
-            emit_zero_extend_w(scratch0);
-         }
          push_x(scratch0);
       }
 

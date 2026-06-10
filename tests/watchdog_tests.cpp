@@ -67,6 +67,23 @@ struct deferred_execution_thread_interrupt_watchdog {
    bool should_interrupt_execution_thread() const { return expired.load(std::memory_order_acquire); }
 };
 
+struct initially_interrupting_watchdog {
+   std::atomic<bool> expired{ false };
+
+   /// Mutates policy after setup; timed_run should use the pre-captured interruption decision.
+   template <typename F>
+   callback_thread_guard scoped_run(F&& callback) {
+      return callback_thread_guard{ std::thread{ [this, callback = std::forward<F>(callback)]() mutable {
+         std::this_thread::sleep_for(std::chrono::milliseconds(10));
+         expired.store(true, std::memory_order_release);
+         callback();
+      } } };
+   }
+
+   /// Starts interrupting and then flips false after expiry to catch accidental watchdog reads on the callback thread.
+   bool should_interrupt_execution_thread() const { return !expired.load(std::memory_order_acquire); }
+};
+
 struct late_execution_thread_interrupt_watchdog {
    template <typename F>
    struct guard {
@@ -109,6 +126,19 @@ std::vector<uint8_t> make_infinite_loop_wasm_module() {
             0x00, 0x03, 0x02, 0x01, 0x00, 0x07, 0x08, 0x01, 0x04, 0x6c, 0x6f, 0x6f, 0x70,
             0x00, 0x00, 0x0a, 0x09, 0x01, 0x07, 0x00, 0x03, 0x40, 0x0c, 0x00, 0x0b, 0x0b };
 }
+
+/// Builds a module whose exported function traps immediately.
+std::vector<uint8_t> make_unreachable_wasm_module() {
+   /*
+    * (module
+    *   (func (export "trap")
+    *     unreachable))
+    */
+   return {
+      0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03, 0x02, 0x01,
+      0x00, 0x07, 0x08, 0x01, 0x04, 0x74, 0x72, 0x61, 0x70, 0x00, 0x00, 0x0a, 0x05, 0x01, 0x03, 0x00, 0x00, 0x0b
+   };
+}
 } // namespace
 
 TEST_CASE("watchdog interrupt", "[watchdog_interrupt]") {
@@ -141,14 +171,14 @@ TEST_CASE("AArch64 JIT watchdog interrupt signals the execution thread", "[watch
                    sysio::vm::timeout_exception);
 }
 
-TEST_CASE("AArch64 JIT watchdog samples interrupt policy at expiry", "[watchdog_interrupt][jit][aarch64]") {
+TEST_CASE("AArch64 JIT watchdog captures interrupt policy before callback setup",
+          "[watchdog_interrupt][jit][aarch64]") {
    using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
    auto      code  = make_infinite_loop_wasm_module();
    backend_t bkend(code, &wa);
 
-   CHECK_THROWS_AS(
-         bkend.timed_run(deferred_execution_thread_interrupt_watchdog{}, [&]() { bkend.call("env", "loop"); }),
-         sysio::vm::timeout_exception);
+   CHECK_THROWS_AS(bkend.timed_run(initially_interrupting_watchdog{}, [&]() { bkend.call("env", "loop"); }),
+                   sysio::vm::timeout_exception);
 }
 
 TEST_CASE("AArch64 interpreter watchdog interrupts infinite loop", "[watchdog_interrupt][interpreter][aarch64]") {
@@ -179,5 +209,20 @@ TEST_CASE("AArch64 JIT watchdog late signal is reported as timeout", "[watchdog_
 
    CHECK_THROWS_AS(bkend.timed_run(late_execution_thread_interrupt_watchdog{}, [&]() { bkend.call("env", "run"); }),
                    sysio::vm::timeout_exception);
+}
+
+TEST_CASE("AArch64 JIT watchdog racing repeated traps remains contained", "[watchdog_interrupt][jit][aarch64]") {
+   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
+   auto      code  = make_unreachable_wasm_module();
+   backend_t bkend(code, &wa);
+
+   for (uint32_t i = 0; i < 100; ++i) {
+      try {
+         bkend.timed_run(watchdog{ std::chrono::nanoseconds(1) }, [&]() { bkend.call("env", "trap"); });
+         FAIL("trap or timeout expected");
+      } catch (const sysio::vm::timeout_exception&) {
+         SUCCEED("deadline won the race");
+      } catch (const std::exception&) { SUCCEED("trap won the race"); }
+   }
 }
 #endif

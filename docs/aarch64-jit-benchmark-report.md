@@ -20,7 +20,7 @@ build/macos-arm64-port
 Benchmark target:
 
 ```text
-build/macos-arm64-port/tests/aarch64_prototype_benchmark
+build/macos-arm64-port/tests/aarch64_jit_benchmark
 ```
 
 ## Validation
@@ -42,7 +42,7 @@ ctest --test-dir build/macos-arm64-port --output-on-failure
 Command:
 
 ```sh
-build/macos-arm64-port/tests/aarch64_prototype_benchmark
+build/macos-arm64-port/tests/aarch64_jit_benchmark
 ```
 
 Result:
@@ -52,7 +52,7 @@ kernel=sum_to
 input=1000
 iterations=20000
 interpreter_ms=5393.78
-aarch64_prototype_jit_ms=97.81
+aarch64_jit_ms=97.81
 speedup=55.1455
 checksum=10039950000
 ```
