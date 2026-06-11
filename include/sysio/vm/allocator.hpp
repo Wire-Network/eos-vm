@@ -490,14 +490,13 @@ namespace sysio { namespace vm {
       /// Makes code pages unexecutable so the deadline timer can interrupt execution.
       bool disable_code() {
          if constexpr (detail::use_apple_jit_write_protect) {
-            if (_is_jit)
-               detail::set_jit_write_protect(false);
+            if (_is_jit) {
+               // MAP_JIT pages are controlled by Apple's per-thread write-protection view and cannot be
+               // treated as reliably revoked executable memory. AArch64 JIT timeouts use generated polls.
+               return false;
+            }
          }
          int err = mprotect(_code_base, _code_size, PROT_NONE);
-         if constexpr (detail::use_apple_jit_write_protect) {
-            if (_is_jit)
-               detail::set_jit_write_protect(true);
-         }
          if (err != 0)
             return false;
          _code_disabled.store(true, std::memory_order_release);

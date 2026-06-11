@@ -1853,6 +1853,32 @@ namespace sysio { namespace vm {
          }
       }
 
+      /// Returns one 16-bit move-wide chunk from a 64-bit immediate.
+      static constexpr uint32_t move_wide_chunk(uint64_t value, uint32_t chunk) {
+         return static_cast<uint32_t>((value >> (chunk * 16u)) & 0xffffu);
+      }
+
+      /// Counts instructions needed after seeding a move-wide value with zero or all-one chunks.
+      static constexpr uint32_t move_wide_instruction_count(uint64_t value, uint32_t fill) {
+         uint32_t count = 0;
+         for (uint32_t chunk = 0; chunk < 4; ++chunk) {
+            if (move_wide_chunk(value, chunk) != fill) {
+               ++count;
+            }
+         }
+         return count == 0 ? 1 : count;
+      }
+
+      /// Selects a chunk that lets the first move-wide instruction encode useful bits.
+      static constexpr uint32_t move_wide_seed_chunk(uint64_t value, uint32_t fill) {
+         for (uint32_t chunk = 0; chunk < 4; ++chunk) {
+            if (move_wide_chunk(value, chunk) != fill) {
+               return chunk;
+            }
+         }
+         return 0;
+      }
+
       /// Encodes a 32-bit immediate into a W register using movz/movk.
       void emit_mov_w_imm(uint32_t value, uint32_t reg) {
          emit_u32(0x52800000u | ((value & 0xffffu) << 5) | reg);
@@ -1862,13 +1888,23 @@ namespace sysio { namespace vm {
          }
       }
 
-      /// Encodes a 64-bit immediate into an X register using movz/movk.
-      /// TODO: Consider MOVN for dense 0xffff... constants to reduce code size.
+      /// Encodes a 64-bit immediate into an X register using the shortest movz/movn plus movk sequence.
       void emit_mov_x_imm(uint64_t value, uint32_t reg) {
-         emit_u32(0xd2800000u | (static_cast<uint32_t>(value & 0xffffu) << 5) | reg);
-         for (uint32_t chunk = 1; chunk < 4; ++chunk) {
-            const auto part = static_cast<uint32_t>((value >> (chunk * 16)) & 0xffffu);
-            if (part) {
+         constexpr uint32_t zero_fill = 0;
+         constexpr uint32_t ones_fill = 0xffffu;
+
+         const bool use_movn =
+               move_wide_instruction_count(value, ones_fill) < move_wide_instruction_count(value, zero_fill);
+         const uint32_t fill      = use_movn ? ones_fill : zero_fill;
+         const uint32_t seed      = move_wide_seed_chunk(value, fill);
+         const uint32_t seed_part = move_wide_chunk(value, seed);
+         const uint32_t seed_imm  = use_movn ? (~seed_part & ones_fill) : seed_part;
+         const uint32_t seed_base = use_movn ? 0x92800000u : 0xd2800000u;
+
+         emit_u32(seed_base | (seed << 21) | (seed_imm << 5) | reg);
+         for (uint32_t chunk = 0; chunk < 4; ++chunk) {
+            const uint32_t part = move_wide_chunk(value, chunk);
+            if (chunk != seed && part != fill) {
                emit_u32(0xf2800000u | (chunk << 21) | (part << 5) | reg);
             }
          }
@@ -1916,9 +1952,6 @@ namespace sysio { namespace vm {
             emit_zero_extend_w(return_reg);
          }
          push_x(return_reg);
-         // TODO: Audit helper-backed ops and remove dead context/linear-memory reloads where consumers reload them.
-         load_context();
-         load_linear_memory();
       }
 
       /// Alias for helper-backed integer unary operations at integer opcode call sites.
@@ -1931,8 +1964,6 @@ namespace sysio { namespace vm {
             emit_zero_extend_w(return_reg);
          }
          push_x(return_reg);
-         load_context();
-         load_linear_memory();
       }
 
       /// Emits a helper-backed unary operation with raw native_value slots.
@@ -1946,8 +1977,6 @@ namespace sysio { namespace vm {
             emit_zero_extend_w(return_reg);
          }
          push_x(return_reg);
-         load_context();
-         load_linear_memory();
       }
 
       /// Emits a helper-backed floating-point comparison whose helper returns i32 0/1.
@@ -1961,8 +1990,6 @@ namespace sysio { namespace vm {
          emit_call_helper(helper);
          emit_zero_extend_w(return_reg);
          push_x(return_reg);
-         load_context();
-         load_linear_memory();
       }
 
       /// Emits a helper-backed floating-point binary operation using raw bit-pattern operands.
@@ -1978,8 +2005,6 @@ namespace sysio { namespace vm {
             emit_zero_extend_w(return_reg);
          }
          push_x(return_reg);
-         load_context();
-         load_linear_memory();
       }
 
       /// Emits a register-variable integer shift whose rhs is masked by AArch64 to the WASM width.
@@ -1997,15 +2022,12 @@ namespace sysio { namespace vm {
          load_context();
          emit_call_helper(&enter_call);
          load_context();
-         load_linear_memory();
       }
 
       /// Emits a call-depth release after a generated direct or indirect call.
       void emit_exit_call() {
          load_context();
          emit_call_helper(&exit_call);
-         load_context();
-         load_linear_memory();
       }
 
       /// Emits rotate-left through AArch64's rotate-right instruction and a negated shift count.

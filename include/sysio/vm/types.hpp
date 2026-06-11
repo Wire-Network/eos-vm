@@ -223,8 +223,6 @@ namespace sysio { namespace vm {
             std::vector<uint8_t>  data;
          };
          struct jit_table_type {
-            elem_type             element_type;
-            resizable_limits      limits;
             std::vector<uint32_t> table;
          };
 
@@ -303,8 +301,6 @@ namespace sysio { namespace vm {
                for (uint32_t i = 0; i < tables_size; ++i) {
                   const auto& table = tables[i];
                   jit_mod->tables.emplace_back(jit_mod_t::jit_table_type{
-                     table.element_type,
-                     table.limits,
                      {table.table.data(), table.table.data() + table.table.size()}
                   });
                }

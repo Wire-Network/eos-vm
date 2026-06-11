@@ -281,6 +281,24 @@ TEST_CASE("AArch64 JIT executes a zero-argument i64 function", "[jit][aarch64]")
    CHECK(result->to_ui64() == 42u);
 }
 
+TEST_CASE("AArch64 JIT materializes dense all-ones i64 constants", "[jit][aarch64]") {
+   /*
+    * (module
+    *   (func (export "run") (result i64)
+    *     i64.const -1))
+    */
+   std::vector<uint8_t> code = { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60,
+                                 0x00, 0x01, 0x7e, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x72,
+                                 0x75, 0x6e, 0x00, 0x00, 0x0a, 0x06, 0x01, 0x04, 0x00, 0x42, 0x7f, 0x0b };
+
+   using backend_t = backend<std::nullptr_t, jit>;
+   backend_t bkend(code, &wa);
+
+   auto result = bkend.call_with_return("env", "run");
+   REQUIRE(result);
+   CHECK(result->to_ui64() == UINT64_MAX);
+}
+
 TEST_CASE("AArch64 JIT executes an i32 function with parameters", "[jit][aarch64]") {
    /*
     * (module

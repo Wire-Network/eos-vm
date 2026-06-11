@@ -4,6 +4,7 @@
 
 enable_testing()
 include(FetchContent)
+include(CheckCXXSourceCompiles)
 
 set(CATCH_BUILD_TESTING OFF CACHE BOOL "Disable Catch2 self-tests")
 set(CATCH_INSTALL_DOCS OFF CACHE BOOL "Disable Catch2 documentation install")
@@ -184,7 +185,19 @@ setup_vm_target(unit_tests)
 target_link_libraries(unit_tests sys-vm Catch2::Catch2)
 target_compile_definitions(unit_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
 
-if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$")
+set(SYS_VM_CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES})
+set(CMAKE_REQUIRED_INCLUDES "${PROJECT_SOURCE_DIR}/include")
+check_cxx_source_compiles([=[
+#include <sysio/vm/config.hpp>
+#if !SYS_VM_HAS_AARCH64_JIT_BACKEND
+#error AArch64 JIT backend is disabled.
+#endif
+int main() { return 0; }
+]=] SYS_VM_HAS_AARCH64_JIT_BACKEND_FOR_BENCHMARK)
+set(CMAKE_REQUIRED_INCLUDES ${SYS_VM_CMAKE_REQUIRED_INCLUDES})
+unset(SYS_VM_CMAKE_REQUIRED_INCLUDES)
+
+if(SYS_VM_HAS_AARCH64_JIT_BACKEND_FOR_BENCHMARK)
    add_executable(aarch64_jit_benchmark aarch64_jit_benchmark.cpp)
    setup_vm_target(aarch64_jit_benchmark)
    target_link_libraries(aarch64_jit_benchmark sys-vm)

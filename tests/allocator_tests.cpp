@@ -202,12 +202,11 @@ TEST_CASE("Testing JIT code copy, disable, and re-enable", "[growable_allocator]
       invoke_with_signal_handler([&]() { (void)fn(); },
                                  [&](int sig) { interrupted = sig == SIGSEGV || sig == SIGBUS || sig == SIGILL; },
                                  alloc, nullptr);
+      CHECK(interrupted);
    } else {
-      invoke_with_signal_handler([&]() { pthread_kill(pthread_self(), SIGSEGV); },
-                                 [&](int sig) { interrupted = sig == SIGSEGV; }, alloc, nullptr);
+      SUCCEED("This platform does not allow disabling the generated code stub");
    }
 
-   CHECK(interrupted);
    CHECK(alloc.enable_code(true));
    CHECK(fn() == 42);
 #else
