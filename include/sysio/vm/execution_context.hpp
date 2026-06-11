@@ -280,15 +280,6 @@ namespace sysio { namespace vm {
 
       void set_max_call_depth(std::uint32_t max_call_depth) { _remaining_call_depth = max_call_depth; }
 
-      /// Reserves one JIT call-depth slot before a generated function calls another function.
-      void enter_jit_call() {
-         SYS_VM_ASSERT(_remaining_call_depth > 1, wasm_interpreter_exception, "call depth exceeded");
-         --_remaining_call_depth;
-      }
-
-      /// Releases one JIT call-depth slot after a generated function returns from another function.
-      void exit_jit_call() { ++_remaining_call_depth; }
-
       /// Returns the byte offset used by JIT backends that update call depth inline.
 #if defined(__clang__)
 #   pragma clang diagnostic push
