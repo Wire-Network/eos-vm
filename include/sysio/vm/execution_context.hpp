@@ -1,6 +1,7 @@
 #pragma once
 
 #include <sysio/vm/allocator.hpp>
+#include <sysio/vm/config.hpp>
 #include <sysio/vm/constants.hpp>
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/execution_interface.hpp>
@@ -13,29 +14,30 @@
 
 #include <algorithm>
 #include <cassert>
-#include <signal.h>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <signal.h>
 #include <string_view>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 // OSX requires _XOPEN_SOURCE to #include <ucontext.h>
 #ifdef __APPLE__
-#ifndef _XOPEN_SOURCE
-#define _XOPEN_SOURCE 700
-#endif
+#   ifndef _XOPEN_SOURCE
+#      define _XOPEN_SOURCE 700
+#   endif
 #endif
 #include <ucontext.h>
 
 namespace sysio { namespace vm {
 
    struct null_host_functions {
-      template<typename... A>
+      template <typename... A>
       void operator()(A&&...) const {
          SYS_VM_ASSERT(false, wasm_interpreter_exception,
                        "Should never get here because it's impossible to link a module "
@@ -78,11 +80,12 @@ namespace sysio { namespace vm {
       };
       template <typename HF>
       using host_invoker_t = typename host_invoker<HF>::type;
-   }
+   } // namespace detail
 
-   template<typename Derived, typename Host, bool IsJit>
+   template <typename Derived, typename Host, bool IsJit>
    class execution_context_base {
-      using host_type  = detail::host_type_t<Host>;
+      using host_type = detail::host_type_t<Host>;
+
     public:
       Derived& derived() { return static_cast<Derived&>(*this); }
       execution_context_base() {}
@@ -91,19 +94,16 @@ namespace sysio { namespace vm {
       inline void initialize_globals() {
          if constexpr (IsJit) {
             return initialize_globals_impl(*_mod->jit_mod);
-         }
-         else {
+         } else {
             return initialize_globals_impl(*_mod);
          }
       }
 
-      template<typename Module>
+      template <typename Module>
       inline void initialize_globals_impl(const Module& mod) {
          SYS_VM_ASSERT(_globals.empty(), wasm_memory_exception, "initialize_globals called on non-empty _globals");
          _globals.reserve(mod.globals.size());
-         for (uint32_t i = 0; i < mod.globals.size(); i++) {
-            _globals.emplace_back(mod.globals[i].init);
-         }
+         for (uint32_t i = 0; i < mod.globals.size(); i++) { _globals.emplace_back(mod.globals[i].init); }
       }
 
       inline int32_t grow_linear_memory(int32_t pages) {
@@ -114,7 +114,7 @@ namespace sysio { namespace vm {
          }
       }
 
-      template<typename Module>
+      template <typename Module>
       inline int32_t grow_linear_memory_impl(const Module& mod, int32_t pages) {
          const int32_t sz = _wasm_alloc->get_current_page();
          if (pages < 0) {
@@ -134,7 +134,7 @@ namespace sysio { namespace vm {
       inline void    exit(std::error_code err = std::error_code()) {
          // FIXME: system_error?
          _error_code = err;
-         throw wasm_exit_exception{"Exiting"};
+         throw wasm_exit_exception{ "Exiting" };
       }
 
       inline void        set_module(module* mod) { _mod = mod; }
@@ -145,11 +145,13 @@ namespace sysio { namespace vm {
       inline auto&       get_operand_stack() { return _os; }
       inline const auto& get_operand_stack() const { return _os; }
       inline auto        get_interface() { return execution_interface{ _linear_memory, &_os }; }
-      void               set_max_pages(std::uint32_t max_pages) { _max_pages = std::min(max_pages, static_cast<std::uint32_t>(vm::max_pages)); }
+      void               set_max_pages(std::uint32_t max_pages) {
+         _max_pages = std::min(max_pages, static_cast<std::uint32_t>(vm::max_pages));
+      }
 
       inline std::error_code get_error_code() const { return _error_code; }
 
-      template<typename Module>
+      template <typename Module>
       inline void reset(Module& mod) {
          SYS_VM_ASSERT(_mod->error == nullptr, wasm_interpreter_exception, _mod->error);
 
@@ -158,20 +160,21 @@ namespace sysio { namespace vm {
          _os.reset_capacity();
 
          _linear_memory = _wasm_alloc->get_base_ptr<char>();
-         if(mod.memories.size()) {
-            SYS_VM_ASSERT(mod.memories[0].limits.initial <= _max_pages, wasm_bad_alloc, "Cannot allocate initial linear memory.");
+         if (mod.memories.size()) {
+            SYS_VM_ASSERT(mod.memories[0].limits.initial <= _max_pages, wasm_bad_alloc,
+                          "Cannot allocate initial linear memory.");
             _wasm_alloc->reset(mod.memories[0].limits.initial);
          } else
             _wasm_alloc->reset();
 
          for (uint32_t i = 0; i < mod.data.size(); i++) {
-            const auto& data_seg = mod.data[i];
-            uint32_t offset = data_seg.offset.value.i32; // force to unsigned
-            auto available_memory =  mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
-            auto required_memory = static_cast<uint64_t>(offset) + data_seg.data.size();
+            const auto& data_seg         = mod.data[i];
+            uint32_t    offset           = data_seg.offset.value.i32; // force to unsigned
+            auto        available_memory = mod.memories[0].limits.initial * static_cast<uint64_t>(page_size);
+            auto        required_memory  = static_cast<uint64_t>(offset) + data_seg.data.size();
             SYS_VM_ASSERT(required_memory <= available_memory, wasm_memory_exception, "data out of range");
             auto addr = _linear_memory + offset;
-            if(data_seg.data.size())
+            if (data_seg.data.size())
                memcpy((char*)(addr), data_seg.data.data(), data_seg.data.size());
          }
 
@@ -179,14 +182,12 @@ namespace sysio { namespace vm {
          // Need to clear _globals at the start of an execution.
          _globals.clear();
          _globals.reserve(mod.globals.size());
-         for (uint32_t i = 0; i < mod.globals.size(); i++) {
-            _globals.emplace_back(mod.globals[i].init);
-         }
+         for (uint32_t i = 0; i < mod.globals.size(); i++) { _globals.emplace_back(mod.globals[i].init); }
       }
 
       template <typename Visitor, typename... Args>
       inline std::optional<operand_stack_elem> execute(host_type* host, Visitor&& visitor, const std::string_view func,
-                                               Args&&... args) {
+                                                       Args&&... args) {
          uint32_t func_index = _mod->get_exported_function(func);
          return derived().execute(host, std::forward<Visitor>(visitor), func_index, std::forward<Args>(args)...);
       }
@@ -198,106 +199,131 @@ namespace sysio { namespace vm {
       }
 
     protected:
-
-      template<typename Func_type, typename... Args>
+      template <typename Func_type, typename... Args>
       static void type_check_args(const Func_type& ft, Args&&...) {
-         SYS_VM_ASSERT(sizeof...(Args) == ft.param_types.size(), wasm_interpreter_exception, "wrong number of arguments");
+         SYS_VM_ASSERT(sizeof...(Args) == ft.param_types.size(), wasm_interpreter_exception,
+                       "wrong number of arguments");
          uint32_t i = 0;
-         SYS_VM_ASSERT((... && (to_wasm_type_v<detail::type_converter_t<Host>, Args> == ft.param_types.at(i++))), wasm_interpreter_exception, "unexpected argument type");
+         SYS_VM_ASSERT(
+               (... && (to_wasm_type_v<detail::type_converter_t<Host>, std::decay_t<Args>> == ft.param_types.at(i++))),
+               wasm_interpreter_exception, "unexpected argument type");
       }
 
       static void handle_signal(int sig) {
-         switch(sig) {
-          case SIGSEGV:
-          case SIGBUS:
-          case SIGFPE:
-            break;
-          default:
-            /* TODO fix this */
-            assert(!"??????");
+         switch (sig) {
+            case SIGSEGV:
+            case SIGBUS:
+            case SIGFPE:
+            case SIGILL: break;
+            default:
+               /* TODO fix this */
+               assert(!"??????");
          }
          throw wasm_memory_exception{ "wasm memory out-of-bounds" };
       }
 
-      char*                           _linear_memory    = nullptr;
-      module*                         _mod = nullptr;
-      wasm_allocator*                 _wasm_alloc;
-      uint32_t                        _max_pages = max_pages;
-      detail::host_invoker_t<Host>    _rhf;
-      std::error_code                 _error_code;
-      operand_stack                   _os;
-      std::vector<init_expr>          _globals;
+      char*                        _linear_memory = nullptr;
+      module*                      _mod           = nullptr;
+      wasm_allocator*              _wasm_alloc;
+      uint32_t                     _max_pages = max_pages;
+      detail::host_invoker_t<Host> _rhf;
+      std::error_code              _error_code;
+      operand_stack                _os;
+      std::vector<init_expr>       _globals;
    };
 
-   struct jit_visitor { template<typename T> jit_visitor(T&&) {} };
+   struct jit_visitor {
+      template <typename T>
+      jit_visitor(T&&) {}
+   };
 
-   template<typename Host>
+   template <typename Host>
    class null_execution_context : public execution_context_base<null_execution_context<Host>, Host, false> {
       using base_type = execution_context_base<null_execution_context<Host>, Host, false>;
-   public:
+
+    public:
       null_execution_context() {}
       null_execution_context(module& m, std::uint32_t max_call_depth) : base_type(&m) {}
    };
 
-   template<bool EnableBacktrace>
+   template <bool EnableBacktrace>
    struct frame_info_holder {};
-   template<>
+   template <>
    struct frame_info_holder<true> {
       void* volatile _bottom_frame = nullptr;
-      void* volatile _top_frame = nullptr;
+      void* volatile _top_frame    = nullptr;
    };
 
-   template<typename Host, bool EnableBacktrace = false>
-   class jit_execution_context : public frame_info_holder<EnableBacktrace>, public execution_context_base<jit_execution_context<Host, EnableBacktrace>, Host, true> {
+   template <typename Host, bool EnableBacktrace = false>
+   class jit_execution_context
+       : public frame_info_holder<EnableBacktrace>,
+         public execution_context_base<jit_execution_context<Host, EnableBacktrace>, Host, true> {
       using base_type = execution_context_base<jit_execution_context<Host, EnableBacktrace>, Host, true>;
-      using host_type  = detail::host_type_t<Host>;
-   public:
-      using base_type::execute;
-      using base_type::base_type;
+      using host_type = detail::host_type_t<Host>;
+
+    public:
+      using base_type::_error_code;
+      using base_type::_globals;
       using base_type::_mod;
       using base_type::_rhf;
-      using base_type::_error_code;
-      using base_type::handle_signal;
-      using base_type::get_operand_stack;
-      using base_type::linear_memory;
+      using base_type::base_type;
+      using base_type::execute;
       using base_type::get_interface;
-      using base_type::_globals;
+      using base_type::get_operand_stack;
+      using base_type::handle_signal;
+      using base_type::linear_memory;
 
       jit_execution_context() {}
 
-      jit_execution_context(module& m, std::uint32_t max_call_depth) : base_type(&m), _remaining_call_depth(max_call_depth) {}
+      jit_execution_context(module& m, std::uint32_t max_call_depth)
+          : base_type(&m), _remaining_call_depth(max_call_depth) {}
 
-      void set_max_call_depth(std::uint32_t max_call_depth) {
-         _remaining_call_depth = max_call_depth;
+      void set_max_call_depth(std::uint32_t max_call_depth) { _remaining_call_depth = max_call_depth; }
+
+      /// Returns the byte offset used by JIT backends that update call depth inline.
+#if defined(__clang__)
+#   pragma clang diagnostic push
+#   pragma clang diagnostic ignored "-Winvalid-offsetof"
+#elif defined(__GNUC__)
+#   pragma GCC diagnostic push
+#   pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
+      static constexpr std::size_t remaining_call_depth_offset() {
+         return offsetof(jit_execution_context, _remaining_call_depth);
       }
+#if defined(__clang__)
+#   pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#   pragma GCC diagnostic pop
+#endif
 
       inline native_value call_host_function(native_value* stack, uint32_t index) {
-         const auto& ft = _mod->jit_mod->get_function_type(index);
-         uint32_t num_params = ft.param_types.size();
+         const auto& ft         = _mod->jit_mod->get_function_type(index);
+         uint32_t    num_params = ft.param_types.size();
 #ifndef NDEBUG
          uint32_t original_operands = get_operand_stack().size();
 #endif
-         for(uint32_t i = 0; i < ft.param_types.size(); ++i) {
-            switch(ft.param_types[i]) {
-             case i32: get_operand_stack().push(i32_const_t{stack[num_params - i - 1].i32}); break;
-             case i64: get_operand_stack().push(i64_const_t{stack[num_params - i - 1].i64}); break;
-             case f32: get_operand_stack().push(f32_const_t{stack[num_params - i - 1].f32}); break;
-             case f64: get_operand_stack().push(f64_const_t{stack[num_params - i - 1].f64}); break;
-             default: assert(!"Unexpected type in param_types.");
+         for (uint32_t i = 0; i < ft.param_types.size(); ++i) {
+            switch (ft.param_types[i]) {
+               case i32: get_operand_stack().push(i32_const_t{ stack[num_params - i - 1].i32 }); break;
+               case i64: get_operand_stack().push(i64_const_t{ stack[num_params - i - 1].i64 }); break;
+               case f32: get_operand_stack().push(f32_const_t{ stack[num_params - i - 1].f32 }); break;
+               case f64: get_operand_stack().push(f64_const_t{ stack[num_params - i - 1].f64 }); break;
+               default: assert(!"Unexpected type in param_types.");
             }
          }
          _rhf(_host, get_interface(), _mod->jit_mod->import_functions[index]);
-         native_value result{uint64_t{0}};
+         native_value result{ uint64_t{ 0 } };
          // guarantee that the junk bits are zero, to avoid problems.
          auto set_result = [&result](auto val) { std::memcpy(&result, &val, sizeof(val)); };
-         if(ft.return_count) {
+         if (ft.return_count) {
             operand_stack_elem el = get_operand_stack().pop();
-            switch(ft.return_type) {
-             case i32: set_result(el.to_ui32()); break;
-             case i64: set_result(el.to_ui64()); break;
-             case f32: set_result(el.to_f32()); break;
-             case f64: set_result(el.to_f64()); break;
-             default: assert(!"Unexpected function return type.");
+            switch (ft.return_type) {
+               case i32: set_result(el.to_ui32()); break;
+               case i64: set_result(el.to_ui64()); break;
+               case f32: set_result(el.to_f32()); break;
+               case f64: set_result(el.to_f64()); break;
+               default: assert(!"Unexpected function return type.");
             }
          }
 
@@ -311,22 +337,28 @@ namespace sysio { namespace vm {
       }
 
       template <typename... Args>
-      inline std::optional<operand_stack_elem> execute(host_type* host, jit_visitor, uint32_t func_index, Args&&... args) {
-         auto saved_host = _host;
-         auto saved_os_size = get_operand_stack().size();
-         auto g = scope_guard([&](){ _host = saved_host; get_operand_stack().eat(saved_os_size); });
+      inline std::optional<operand_stack_elem> execute(host_type* host, jit_visitor, uint32_t func_index,
+                                                       Args&&... args) {
+         auto saved_host                 = _host;
+         auto saved_os_size              = get_operand_stack().size();
+         auto saved_remaining_call_depth = _remaining_call_depth;
+         auto g                          = scope_guard([&]() {
+            _host                 = saved_host;
+            _remaining_call_depth = saved_remaining_call_depth;
+            get_operand_stack().eat(saved_os_size);
+         });
 
          _host = host;
 
          const auto& ft = _mod->jit_mod->get_function_type(func_index);
-         this->type_check_args(ft, std::forward<Args>(args)... ); // args not modified by type_check_args
+         this->type_check_args(ft, std::forward<Args>(args)...); // args not modified by type_check_args
          native_value result;
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-value"
-         // Calling execute() with no `args` (i.e. `execute(host_type,jit_visitor,uint32_t)`) results in a "statement has no
-         // effect [-Werror=unused-value]" warning on this line. Dissable warning.
-         native_value args_raw[] = { transform_arg( std::forward<Args>(args))... };
+         // Calling execute() with no `args` (i.e. `execute(host_type,jit_visitor,uint32_t)`) results in a "statement
+         // has no effect [-Werror=unused-value]" warning on this line. Dissable warning.
+         native_value args_raw[] = { transform_arg(std::forward<Args>(args))... };
 #pragma GCC diagnostic pop
 
          try {
@@ -335,94 +367,110 @@ namespace sysio { namespace vm {
                result = call_host_function(args_raw, func_index);
             } else {
                std::size_t maximum_stack_usage =
-                  (_mod->maximum_stack + 2 /*frame ptr + return ptr*/) * (_remaining_call_depth + 1) +
-                 sizeof...(Args) + 4 /* scratch space */;
-               stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
-               // reserve 24 bytes for data accessed by inline assembly
-               void* stack = alt_stack.top();
-               if(stack) {
-                  stack = static_cast<char*>(stack) - 24;
+                     (_mod->maximum_stack + 2 /*frame ptr + return ptr*/) * (_remaining_call_depth + 1) +
+                     sizeof...(Args) + 4 /* scratch space */;
+               if constexpr (sys_vm_has_aarch64_jit_backend) {
+                  // AArch64 JIT stores each VM stack value in a 16-byte slot to preserve ABI stack alignment.
+                  maximum_stack_usage *= 2;
                }
-               auto fn = reinterpret_cast<native_value (*)(void*, void*)>(_mod->jit_mod->jit_code_offset[func_index - _mod->jit_mod->get_imported_functions_size()] + _mod->allocator._code_base);
+               stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
+               // Reserve trampoline scratch space: x86_64 keeps the historical 24 bytes used by
+               // inline assembly data, while AArch64 needs one 16-byte slot to preserve alignment
+               // and save the caller SP.
+               void* stack = alt_stack.top();
+               if (stack) {
+                  constexpr std::ptrdiff_t jit_stack_reserve = sys_vm_has_aarch64_jit_backend ? 16 : 24;
+                  stack                                      = static_cast<char*>(stack) - jit_stack_reserve;
+               }
+               using jit_fn_type =
+                     std::conditional_t<sys_vm_has_aarch64_jit_backend, native_value (*)(void*, void*, native_value*),
+                                        native_value (*)(void*, void*)>;
+               auto fn = reinterpret_cast<jit_fn_type>(
+                     _mod->jit_mod->jit_code_offset[func_index - _mod->jit_mod->get_imported_functions_size()] +
+                     _mod->allocator._code_base);
 
-               if constexpr(EnableBacktrace) {
+               if constexpr (EnableBacktrace) {
                   sigset_t block_mask;
                   sigemptyset(&block_mask);
                   sigaddset(&block_mask, SIGPROF);
                   pthread_sigmask(SIG_BLOCK, &block_mask, nullptr);
-                  auto restore = scope_guard{[this, &block_mask] {
-                     this->_top_frame = nullptr;
+                  auto restore = scope_guard{ [this, &block_mask] {
+                     this->_top_frame    = nullptr;
                      this->_bottom_frame = nullptr;
                      pthread_sigmask(SIG_UNBLOCK, &block_mask, nullptr);
-                  }};
+                  } };
 
-                  vm::invoke_with_signal_handler([&]() {
-                     result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
-                  }, &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+                  vm::invoke_with_signal_handler(
+                        [&]() {
+                           result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
+                        },
+                        &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
                } else {
-                  vm::invoke_with_signal_handler([&]() {
-                     result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
-                  }, &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+                  vm::invoke_with_signal_handler(
+                        [&]() {
+                           result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
+                        },
+                        &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
                }
             }
-         } catch(wasm_exit_exception&) {
-            return {};
-         }
+         } catch (wasm_exit_exception&) { return {}; }
 
-         if(!ft.return_count)
+         if (!ft.return_count)
             return {};
-         else switch (ft.return_type) {
-            case i32: return {i32_const_t{result.i32}};
-            case i64: return {i64_const_t{result.i64}};
-            case f32: return {f32_const_t{result.f32}};
-            case f64: return {f64_const_t{result.f64}};
-            default: assert(!"Unexpected function return type");
-         }
+         else
+            switch (ft.return_type) {
+               case i32: return { i32_const_t{ result.i32 } };
+               case i64: return { i64_const_t{ result.i64 } };
+               case f32: return { f32_const_t{ result.f32 } };
+               case f64: return { f64_const_t{ result.f64 } };
+               default: assert(!"Unexpected function return type");
+            }
          __builtin_unreachable();
       }
 
-#ifdef __x86_64__
+#if SYS_VM_HAS_JIT_PROFILE
       int backtrace(void** out, int count, void* uc) const {
          static_assert(EnableBacktrace);
          void* end = this->_top_frame;
-         if(end == nullptr) return 0;
+         if (end == nullptr)
+            return 0;
          void* rbp;
-         int i = 0;
-         if(this->_bottom_frame) {
+         int   i = 0;
+         if (this->_bottom_frame) {
             rbp = this->_bottom_frame;
-         } else if(count != 0) {
-            if(uc) {
-#ifdef __APPLE__
+         } else if (count != 0) {
+            if (uc) {
+#   ifdef __APPLE__
                auto rip = reinterpret_cast<unsigned char*>(static_cast<ucontext_t*>(uc)->uc_mcontext->__ss.__rip);
-               rbp = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext->__ss.__rbp);
+               rbp      = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext->__ss.__rbp);
                auto rsp = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext->__ss.__rsp);
-#elif defined __FreeBSD__
+#   elif defined __FreeBSD__
                auto rip = reinterpret_cast<unsigned char*>(static_cast<ucontext_t*>(uc)->uc_mcontext.mc_rip);
-               rbp = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext.mc_rbp);
+               rbp      = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext.mc_rbp);
                auto rsp = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext.mc_rsp);
-#else
+#   else
                auto rip = reinterpret_cast<unsigned char*>(static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_RIP]);
-               rbp = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_RBP]);
+               rbp      = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_RBP]);
                auto rsp = reinterpret_cast<void*>(static_cast<ucontext_t*>(uc)->uc_mcontext.gregs[REG_RSP]);
-#endif
+#   endif
                out[i++] = rip;
                // If we were interrupted in the function prologue or epilogue,
                // avoid dropping the parent frame.
                auto code_base = reinterpret_cast<const unsigned char*>(_mod->allocator.get_code_start());
-               auto code_end = code_base + _mod->allocator._code_size;
-               if(rip >= code_base && rip < code_end && count > 1) {
+               auto code_end  = code_base + _mod->allocator._code_size;
+               if (rip >= code_base && rip < code_end && count > 1) {
                   // function prologue
-                  if(*reinterpret_cast<const unsigned char*>(rip) == 0x55) {
-                     if(rip != *static_cast<void**>(rsp)) { // Ignore fake frame set up for softfloat calls
+                  if (*reinterpret_cast<const unsigned char*>(rip) == 0x55) {
+                     if (rip != *static_cast<void**>(rsp)) { // Ignore fake frame set up for softfloat calls
                         out[i++] = *static_cast<void**>(rsp);
                      }
-                  } else if(rip[0] == 0x48 && rip[1] == 0x89 && (rip[2] == 0xe5 || rip[2] == 0x27)) {
-                     if((rip - 1) != static_cast<void**>(rsp)[1]) { // Ignore fake frame set up for softfloat calls
+                  } else if (rip[0] == 0x48 && rip[1] == 0x89 && (rip[2] == 0xe5 || rip[2] == 0x27)) {
+                     if ((rip - 1) != static_cast<void**>(rsp)[1]) { // Ignore fake frame set up for softfloat calls
                         out[i++] = static_cast<void**>(rsp)[1];
                      }
                   }
                   // function epilogue
-                  else if(rip[0] == 0xc3) {
+                  else if (rip[0] == 0xc3) {
                      out[i++] = *static_cast<void**>(rsp);
                   }
                }
@@ -430,165 +478,193 @@ namespace sysio { namespace vm {
                rbp = __builtin_frame_address(0);
             }
          }
-         while(i < count) {
+         while (i < count) {
             void* rip = static_cast<void**>(rbp)[1];
-            if(rbp == end) break;
+            if (rbp == end)
+               break;
             out[i++] = rip;
-            rbp = *static_cast<void**>(rbp);
+            rbp      = *static_cast<void**>(rbp);
          }
          return i;
       }
+#endif
 
+#if SYS_VM_HAS_JIT_BACKEND
       static constexpr bool async_backtrace() { return EnableBacktrace; }
 #endif
 
-      inline int32_t get_global_i32(uint32_t index) {
-         return _globals[index].value.i32;
-      }
+      inline int32_t get_global_i32(uint32_t index) { return _globals[index].value.i32; }
 
-      inline int64_t get_global_i64(uint32_t index) {
-         return _globals[index].value.i64;
-      }
+      inline int64_t get_global_i64(uint32_t index) { return _globals[index].value.i64; }
 
-      inline uint32_t get_global_f32(uint32_t index) {
-         return _globals[index].value.f32;
-      }
+      inline uint32_t get_global_f32(uint32_t index) { return _globals[index].value.f32; }
 
-      inline uint64_t get_global_f64(uint32_t index) {
-         return _globals[index].value.f64;
-      }
+      inline uint64_t get_global_f64(uint32_t index) { return _globals[index].value.f64; }
 
-      inline void set_global_i32(uint32_t index, int32_t value) {
-         _globals[index].value.i32 = value;
-      }
+      inline void set_global_i32(uint32_t index, int32_t value) { _globals[index].value.i32 = value; }
 
-      inline void set_global_i64(uint32_t index, int64_t value) {
-         _globals[index].value.i64 = value;
-      }
+      inline void set_global_i64(uint32_t index, int64_t value) { _globals[index].value.i64 = value; }
 
-      inline void set_global_f32(uint32_t index, uint32_t value) {
-          _globals[index].value.f32 = value;
-      }
+      inline void set_global_f32(uint32_t index, uint32_t value) { _globals[index].value.f32 = value; }
 
-      inline void set_global_f64(uint32_t index, uint64_t value) {
-         _globals[index].value.f64 = value;
-      }
+      inline void set_global_f64(uint32_t index, uint64_t value) { _globals[index].value.f64 = value; }
 
-   protected:
-
-      template<typename T>
+    protected:
+      template <typename T>
       native_value transform_arg(T&& value) {
          // make sure that the garbage bits are always zero.
          native_value result;
          std::memset(&result, 0, sizeof(result));
-         auto tc = detail::type_converter_t<Host>{_host, get_interface()};
-         auto transformed_value = detail::resolve_result(tc, std::forward<T>(value)).data;
+         auto tc                = detail::type_converter_t<Host>{ _host, get_interface() };
+         auto transformed_value = detail::resolve_result(tc, std::decay_t<T>(std::forward<T>(value))).data;
          std::memcpy(&result, &transformed_value, sizeof(transformed_value));
          return result;
       }
 
-#ifdef __x86_64__
+#if SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_X86_64
       /* TODO abstract this and clean this up a bit, this really doesn't belong here */
-      template<int Count>
-      static native_value execute(native_value* data, native_value (*fun)(void*, void*), jit_execution_context* context, void* linear_memory, void* stack) {
+      template <int Count>
+      static native_value execute(native_value* data, native_value (*fun)(void*, void*), jit_execution_context* context,
+                                  void* linear_memory, void* stack) {
          static_assert(sizeof(native_value) == 8, "8-bytes expected for native_value");
          native_value result;
-         unsigned stack_check = context->_remaining_call_depth;
+         unsigned     stack_check = context->_remaining_call_depth;
          // TODO refactor this whole thing to not need all of this, should be generated from the backend
          // currently ignoring register c++17 warning
-         register void* stack_top asm ("r12") = stack;
+         register void* stack_top asm("r12") = stack;
          // 0x1f80 is the default MXCSR value
-#define ASM_CODE(before, after)                                         \
-         asm volatile(                                                  \
-            "test %[stack_top], %[stack_top]; "                          \
-            "jnz 3f; "                                                   \
-            "mov %%rsp, %[stack_top]; "                                  \
-            "sub $0x98, %%rsp; " /* red-zone + 24 bytes*/                \
-            "mov %[stack_top], (%%rsp); "                                \
-            "jmp 4f; "                                                   \
-            "3: "                                                        \
-            "mov %%rsp, (%[stack_top]); "                                \
-            "mov %[stack_top], %%rsp; "                                  \
-            "4: "                                                        \
-            "stmxcsr 16(%%rsp); "                                        \
-            "mov $0x1f80, %%rax; "                                       \
-            "mov %%rax, 8(%%rsp); "                                      \
-            "ldmxcsr 8(%%rsp); "                                         \
-            "mov %[Count], %%rax; "                                      \
-            "test %%rax, %%rax; "                                        \
-            "jz 2f; "                                                    \
-            "1: "                                                        \
-            "movq (%[data]), %%r8; "                                     \
-            "lea 8(%[data]), %[data]; "                                  \
-            "pushq %%r8; "                                               \
-            "dec %%rax; "                                                \
-            "jnz 1b; "                                                   \
-            "2: "                                                        \
-            before                                                       \
-            "callq *%[fun]; "                                            \
-            after                                                        \
-            "add %[StackOffset], %%rsp; "                                \
-            "ldmxcsr 16(%%rsp); "                                        \
-            "mov (%%rsp), %%rsp; "                                       \
-            /* Force explicit register allocation, because otherwise it's too hard to get the clobbers right. */ \
-            : [result] "=&a" (result), /* output, reused as a scratch register */ \
-              [data] "+d" (data), [fun] "+c" (fun), [stack_top] "+r" (stack_top) /* input only, but may be clobbered */ \
-            : [context] "D" (context), [linear_memory] "S" (linear_memory), \
-              [StackOffset] "n" (Count*8), [Count] "n" (Count), "b" (stack_check) /* input */ \
-            : "memory", "cc", /* clobber */                              \
-              /* call clobbered registers, that are not otherwise used */  \
-              /*"rax", "rcx", "rdx", "rsi", "rdi",*/ "r8", "r9", "r10", "r11", \
-              "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", \
-              "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15", \
-              "mm0","mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm6",       \
-              "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)", "st(6)", "st(7)" \
-         );
+#   define ASM_CODE(before, after)                                                                                     \
+      asm volatile(                                                                                                    \
+            "test %[stack_top], %[stack_top]; "                                                                        \
+            "jnz 3f; "                                                                                                 \
+            "mov %%rsp, %[stack_top]; "                                                                                \
+            "sub $0x98, %%rsp; " /* red-zone + 24 bytes*/                                                              \
+            "mov %[stack_top], (%%rsp); "                                                                              \
+            "jmp 4f; "                                                                                                 \
+            "3: "                                                                                                      \
+            "mov %%rsp, (%[stack_top]); "                                                                              \
+            "mov %[stack_top], %%rsp; "                                                                                \
+            "4: "                                                                                                      \
+            "stmxcsr 16(%%rsp); "                                                                                      \
+            "mov $0x1f80, %%rax; "                                                                                     \
+            "mov %%rax, 8(%%rsp); "                                                                                    \
+            "ldmxcsr 8(%%rsp); "                                                                                       \
+            "mov %[Count], %%rax; "                                                                                    \
+            "test %%rax, %%rax; "                                                                                      \
+            "jz 2f; "                                                                                                  \
+            "1: "                                                                                                      \
+            "movq (%[data]), %%r8; "                                                                                   \
+            "lea 8(%[data]), %[data]; "                                                                                \
+            "pushq %%r8; "                                                                                             \
+            "dec %%rax; "                                                                                              \
+            "jnz 1b; "                                                                                                 \
+            "2: " before "callq *%[fun]; " after "add %[StackOffset], %%rsp; "                                         \
+            "ldmxcsr 16(%%rsp); "                                                                                      \
+            "mov (%%rsp), %%rsp; " /* Force explicit register allocation, because otherwise it's too hard to get the   \
+                                      clobbers right. */                                                               \
+            : [result] "=&a"(result), /* output, reused as a scratch register */                                       \
+              [data] "+d"(data), [fun] "+c"(fun), [stack_top] "+r"(stack_top) /* input only, but may be clobbered */   \
+            : [context] "D"(context), [linear_memory] "S"(linear_memory), [StackOffset] "n"(Count * 8),                \
+              [Count] "n"(Count), "b"(stack_check) /* input */                                                         \
+            : "memory", "cc", /* clobber */        /* call clobbered registers, that are not otherwise used */         \
+              /*"rax", "rcx", "rdx", "rsi", "rdi",*/ "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", \
+              "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15", "mm0",     \
+              "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm6", "st", "st(1)", "st(2)", "st(3)", "st(4)", "st(5)",      \
+              "st(6)", "st(7)");
          if constexpr (!EnableBacktrace) {
             ASM_CODE("", "");
          } else {
-            ASM_CODE("movq %%rbp, 8(%[context]); ",
-                     "xor %[fun], %[fun]; "
-                     "mov %[fun], 8(%[context]); ");
+            ASM_CODE("movq %%rbp, 8(%[context]); ", "xor %[fun], %[fun]; "
+                                                    "mov %[fun], 8(%[context]); ");
          }
-#undef ASM_CODE
+#   undef ASM_CODE
          return result;
       }
 #endif
 
-      host_type * _host = nullptr;
-      uint32_t _remaining_call_depth = 0;
+#if SYS_VM_HAS_AARCH64_JIT_BACKEND
+      /**
+       * Minimal AArch64 trampoline.
+       *
+       * The production x86_64 path has a full argument-marshalling assembly trampoline. The
+       * Apple Silicon backend receives a native_value argument array directly and keeps all
+       * WASM scalar values in general-purpose registers.
+       */
+      template <int Count>
+      static native_value execute(native_value*          data, native_value (*fun)(void*, void*, native_value*),
+                                  jit_execution_context* context, void* linear_memory, void* stack) {
+         static_assert(sizeof(native_value) == 8, "8-bytes expected for native_value");
+         native_value           result;
+         register void*         arg0 asm("x0")       = context;
+         register void*         arg1 asm("x1")       = linear_memory;
+         register native_value* arg2 asm("x2")       = data;
+         register void*         target asm("x9")     = reinterpret_cast<void*>(fun);
+         register void*         stack_top asm("x20") = stack;
+
+         asm volatile("sub sp, sp, #16\n"
+                      "str x20, [sp]\n"
+                      "mov x11, sp\n"
+                      "cbz x20, 1f\n"
+                      "str x11, [x20]\n"
+                      "mov sp, x20\n"
+                      "1:\n"
+                      "blr x9\n"
+                      "cbz x20, 2f\n"
+                      "ldr x11, [x20]\n"
+                      "mov sp, x11\n"
+                      "2:\n"
+                      "ldr x20, [sp]\n"
+                      "add sp, sp, #16\n"
+                      : "+r"(arg0), "+r"(arg1), "+r"(arg2), "+r"(target)
+                      : "r"(stack_top)
+                      : "memory", "cc", "x3", "x4", "x5", "x6", "x7", "x8", "x10", "x11", "x12", "x13", "x14", "x15",
+                        "x16", "x17",
+#   if !defined(__APPLE__)
+                        "x18",
+#   endif
+                        "x30", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13",
+                        "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v26",
+                        "v27", "v28", "v29", "v30", "v31");
+         std::memcpy(&result, &arg0, sizeof(result));
+         return result;
+      }
+#endif
+
+      host_type* _host                 = nullptr;
+      uint32_t   _remaining_call_depth = 0;
    };
 
    template <typename Host>
    class execution_context : public execution_context_base<execution_context<Host>, Host, false> {
       using base_type = execution_context_base<execution_context<Host>, Host, false>;
-      using host_type  = detail::host_type_t<Host>;
+      using host_type = detail::host_type_t<Host>;
+
     public:
+      using base_type::_error_code;
+      using base_type::_globals;
       using base_type::_mod;
       using base_type::_rhf;
-      using base_type::_error_code;
-      using base_type::handle_signal;
-      using base_type::get_operand_stack;
-      using base_type::linear_memory;
       using base_type::get_interface;
-      using base_type::_globals;
+      using base_type::get_operand_stack;
+      using base_type::handle_signal;
+      using base_type::linear_memory;
 
-      execution_context()
-       : base_type(), _halt(exit_t{}) {}
+      execution_context() : base_type(), _halt(exit_t{}) {}
 
       execution_context(module& m, uint32_t max_call_depth)
-       : base_type(&m), _base_allocator{max_call_depth*sizeof(activation_frame)},
-         _as{max_call_depth, _base_allocator}, _halt(exit_t{}) {}
+          : base_type(&m), _base_allocator{ max_call_depth * sizeof(activation_frame) },
+            _as{ max_call_depth, _base_allocator }, _halt(exit_t{}) {}
 
       void set_max_call_depth(uint32_t max_call_depth) {
-         static_assert(std::is_trivially_move_assignable_v<call_stack>, "This is seriously broken if call_stack move assignment might use the existing memory");
-         std::size_t mem_size = max_call_depth*sizeof(activation_frame);
-         if(mem_size > _base_allocator.mem_size) {
-            _base_allocator = bounded_allocator{mem_size};
-            _as = call_stack{max_call_depth, _base_allocator};
-         } else if (max_call_depth != _as.capacity()){
+         static_assert(std::is_trivially_move_assignable_v<call_stack>,
+                       "This is seriously broken if call_stack move assignment might use the existing memory");
+         std::size_t mem_size = max_call_depth * sizeof(activation_frame);
+         if (mem_size > _base_allocator.mem_size) {
+            _base_allocator = bounded_allocator{ mem_size };
+            _as             = call_stack{ max_call_depth, _base_allocator };
+         } else if (max_call_depth != _as.capacity()) {
             _base_allocator.index = 0;
-            _as = call_stack{max_call_depth, _base_allocator};
+            _as                   = call_stack{ max_call_depth, _base_allocator };
          }
       }
 
@@ -599,7 +675,7 @@ namespace sysio { namespace vm {
             const auto& ft = _mod->types[_mod->imports[index].type.func_t];
             type_check(ft);
             inc_pc();
-            push_call( activation_frame{ nullptr, 0 } );
+            push_call(activation_frame{ nullptr, 0 });
             _rhf(_state.host, get_interface(), _mod->import_functions[index]);
             pop_call();
          } else {
@@ -607,7 +683,7 @@ namespace sysio { namespace vm {
             // type_check(ft);
             push_call(index);
             setup_locals(index);
-            set_pc( _mod->get_function_pc(index) );
+            set_pc(_mod->get_function_pc(index));
          }
       }
 
@@ -615,38 +691,43 @@ namespace sysio { namespace vm {
          std::cout << "STACK { ";
          for (int i = 0; i < get_operand_stack().size(); i++) {
             std::cout << "(" << i << ")";
-            visit(overloaded { [&](i32_const_t el) { std::cout << "i32:" << el.data.ui << ", "; },
-                               [&](i64_const_t el) { std::cout << "i64:" << el.data.ui << ", "; },
-                               [&](f32_const_t el) { std::cout << "f32:" << el.data.f << ", "; },
-                               [&](f64_const_t el) { std::cout << "f64:" << el.data.f << ", "; },
-                               [&](auto el) { std::cout << "(INDEX " << el.index() << "), "; } }, get_operand_stack().get(i));
+            visit(overloaded{ [&](i32_const_t el) { std::cout << "i32:" << el.data.ui << ", "; },
+                              [&](i64_const_t el) { std::cout << "i64:" << el.data.ui << ", "; },
+                              [&](f32_const_t el) { std::cout << "f32:" << el.data.f << ", "; },
+                              [&](f64_const_t el) { std::cout << "f64:" << el.data.f << ", "; },
+                              [&](auto el) { std::cout << "(INDEX " << el.index() << "), "; } },
+                  get_operand_stack().get(i));
          }
          std::cout << " }\n";
       }
 
-      inline uint32_t       table_elem(uint32_t i) { return _mod->tables[0].table[i]; }
-      inline void           push_operand(operand_stack_elem el) { get_operand_stack().push(std::move(el)); }
-      inline operand_stack_elem get_operand(uint32_t index) const { return get_operand_stack().get(_last_op_index + index); }
-      inline void           eat_operands(uint32_t index) { get_operand_stack().eat(index); }
-      inline void           compact_operand(uint32_t index) { get_operand_stack().compact(index); }
-      inline void           set_operand(uint32_t index, const operand_stack_elem& el) { get_operand_stack().set(_last_op_index + index, el); }
-      inline uint32_t       current_operands_index() const { return get_operand_stack().current_index(); }
-      inline void           push_call(activation_frame&& el) { _as.push(std::move(el)); }
+      inline uint32_t           table_elem(uint32_t i) { return _mod->tables[0].table[i]; }
+      inline void               push_operand(operand_stack_elem el) { get_operand_stack().push(std::move(el)); }
+      inline operand_stack_elem get_operand(uint32_t index) const {
+         return get_operand_stack().get(_last_op_index + index);
+      }
+      inline void eat_operands(uint32_t index) { get_operand_stack().eat(index); }
+      inline void compact_operand(uint32_t index) { get_operand_stack().compact(index); }
+      inline void set_operand(uint32_t index, const operand_stack_elem& el) {
+         get_operand_stack().set(_last_op_index + index, el);
+      }
+      inline uint32_t         current_operands_index() const { return get_operand_stack().current_index(); }
+      inline void             push_call(activation_frame&& el) { _as.push(std::move(el)); }
       inline activation_frame pop_call() { return _as.pop(); }
-      inline uint32_t       call_depth()const { return _as.size(); }
-      template <bool Should_Exit=false>
-      inline void           push_call(uint32_t index) {
+      inline uint32_t         call_depth() const { return _as.size(); }
+      template <bool Should_Exit = false>
+      inline void push_call(uint32_t index) {
          opcode* return_pc = static_cast<opcode*>(&_halt);
          if constexpr (!Should_Exit)
             return_pc = _state.pc + 1;
 
-         _as.push( activation_frame{ return_pc, _last_op_index } );
+         _as.push(activation_frame{ return_pc, _last_op_index });
          _last_op_index = get_operand_stack().size() - _mod->get_function_type(index).param_types.size();
       }
 
       inline void apply_pop_call(uint32_t num_locals, uint16_t return_count) {
          const auto& af = _as.pop();
-         _state.pc = af.pc;
+         _state.pc      = af.pc;
          _last_op_index = af.last_op_index;
          if (return_count)
             compact_operand(get_operand_stack().size() - num_locals - 1);
@@ -657,7 +738,8 @@ namespace sysio { namespace vm {
       inline operand_stack_elem& peek_operand(size_t i = 0) { return get_operand_stack().peek(i); }
       inline operand_stack_elem  get_global(uint32_t index) {
          SYS_VM_ASSERT(index < _mod->globals.size(), wasm_interpreter_exception, "global index out of range");
-         SYS_VM_ASSERT(index < _globals.size(), wasm_interpreter_exception, "index for _globals out of range in get_global for interpreter");
+         SYS_VM_ASSERT(index < _globals.size(), wasm_interpreter_exception,
+                       "index for _globals out of range in get_global for interpreter");
          const auto& gl = _mod->globals[index];
          switch (gl.type.content_type) {
             case types::i32: return i32_const_t{ _globals[index].value.i32 };
@@ -674,34 +756,34 @@ namespace sysio { namespace vm {
          auto& gl = _mod->globals[index];
          SYS_VM_ASSERT(gl.type.mutability, wasm_interpreter_exception, "global is not mutable");
          visit(overloaded{ [&](const i32_const_t& i) {
-                                  SYS_VM_ASSERT(gl.type.content_type == types::i32, wasm_interpreter_exception,
-                                                "expected i32 global type");
-                                  _globals[index].value.i32 = i.data.ui;
-                               },
-                                [&](const i64_const_t& i) {
-                                   SYS_VM_ASSERT(gl.type.content_type == types::i64, wasm_interpreter_exception,
-                                                 "expected i64 global type");
-                                   _globals[index].value.i64 = i.data.ui;
-                                },
-                                [&](const f32_const_t& f) {
-                                   SYS_VM_ASSERT(gl.type.content_type == types::f32, wasm_interpreter_exception,
-                                                 "expected f32 global type");
-                                   _globals[index].value.f32 = f.data.ui;
-                                },
-                                [&](const f64_const_t& f) {
-                                   SYS_VM_ASSERT(gl.type.content_type == types::f64, wasm_interpreter_exception,
-                                                 "expected f64 global type");
-                                   _globals[index].value.f64 = f.data.ui;
-                                },
-                                [](auto) { throw wasm_interpreter_exception{ "invalid global type" }; } },
-                    el);
+                             SYS_VM_ASSERT(gl.type.content_type == types::i32, wasm_interpreter_exception,
+                                           "expected i32 global type");
+                             _globals[index].value.i32 = i.data.ui;
+                          },
+                           [&](const i64_const_t& i) {
+                              SYS_VM_ASSERT(gl.type.content_type == types::i64, wasm_interpreter_exception,
+                                            "expected i64 global type");
+                              _globals[index].value.i64 = i.data.ui;
+                           },
+                           [&](const f32_const_t& f) {
+                              SYS_VM_ASSERT(gl.type.content_type == types::f32, wasm_interpreter_exception,
+                                            "expected f32 global type");
+                              _globals[index].value.f32 = f.data.ui;
+                           },
+                           [&](const f64_const_t& f) {
+                              SYS_VM_ASSERT(gl.type.content_type == types::f64, wasm_interpreter_exception,
+                                            "expected f64 global type");
+                              _globals[index].value.f64 = f.data.ui;
+                           },
+                           [](auto) { throw wasm_interpreter_exception{ "invalid global type" }; } },
+               el);
       }
 
       inline bool is_true(const operand_stack_elem& el) {
          bool ret_val = false;
          visit(overloaded{ [&](const i32_const_t& i32) { ret_val = i32.data.ui; },
                            [&](auto) { throw wasm_invalid_element{ "should be an i32 type" }; } },
-                    el);
+               el);
          return ret_val;
       }
 
@@ -709,35 +791,33 @@ namespace sysio { namespace vm {
          for (uint32_t i = 0; i < ft.param_types.size(); i++) {
             const auto& op = peek_operand((ft.param_types.size() - 1) - i);
             visit(overloaded{ [&](const i32_const_t&) {
-                                     SYS_VM_ASSERT(ft.param_types[i] == types::i32, wasm_interpreter_exception,
-                                                   "function param type mismatch");
-                                  },
-                                   [&](const f32_const_t&) {
-                                      SYS_VM_ASSERT(ft.param_types[i] == types::f32, wasm_interpreter_exception,
-                                                    "function param type mismatch");
-                                   },
-                                   [&](const i64_const_t&) {
-                                      SYS_VM_ASSERT(ft.param_types[i] == types::i64, wasm_interpreter_exception,
-                                                    "function param type mismatch");
-                                   },
-                                   [&](const f64_const_t&) {
-                                      SYS_VM_ASSERT(ft.param_types[i] == types::f64, wasm_interpreter_exception,
-                                                    "function param type mismatch");
-                                   },
-                                   [&](auto) { throw wasm_interpreter_exception{ "function param invalid type" }; } },
-                       op);
+                                SYS_VM_ASSERT(ft.param_types[i] == types::i32, wasm_interpreter_exception,
+                                              "function param type mismatch");
+                             },
+                              [&](const f32_const_t&) {
+                                 SYS_VM_ASSERT(ft.param_types[i] == types::f32, wasm_interpreter_exception,
+                                               "function param type mismatch");
+                              },
+                              [&](const i64_const_t&) {
+                                 SYS_VM_ASSERT(ft.param_types[i] == types::i64, wasm_interpreter_exception,
+                                               "function param type mismatch");
+                              },
+                              [&](const f64_const_t&) {
+                                 SYS_VM_ASSERT(ft.param_types[i] == types::f64, wasm_interpreter_exception,
+                                               "function param type mismatch");
+                              },
+                              [&](auto) { throw wasm_interpreter_exception{ "function param invalid type" }; } },
+                  op);
          }
       }
 
-      inline opcode*  get_pc() const { return _state.pc; }
-      inline void     set_relative_pc(uint32_t pc_offset) {
-         _state.pc = _mod->code[0].code + pc_offset;
-      }
-      inline void     set_pc(opcode* pc) { _state.pc = pc; }
-      inline void     inc_pc(uint32_t offset=1) { _state.pc += offset; }
-      inline void     exit(std::error_code err = std::error_code()) {
-         _error_code = err;
-         _state.pc = &_halt;
+      inline opcode* get_pc() const { return _state.pc; }
+      inline void    set_relative_pc(uint32_t pc_offset) { _state.pc = _mod->code[0].code + pc_offset; }
+      inline void    set_pc(opcode* pc) { _state.pc = pc; }
+      inline void    inc_pc(uint32_t offset = 1) { _state.pc += offset; }
+      inline void    exit(std::error_code err = std::error_code()) {
+         _error_code    = err;
+         _state.pc      = &_halt;
          _state.exiting = true;
       }
 
@@ -749,8 +829,8 @@ namespace sysio { namespace vm {
       }
 
       template <typename Visitor, typename... Args>
-      inline std::optional<operand_stack_elem> execute_func_table(host_type* host, Visitor&& visitor, uint32_t table_index,
-                                                                  Args&&... args) {
+      inline std::optional<operand_stack_elem> execute_func_table(host_type* host, Visitor&& visitor,
+                                                                  uint32_t table_index, Args&&... args) {
          return execute(host, std::forward<Visitor>(visitor), table_elem(table_index), std::forward<Args>(args)...);
       }
 
@@ -768,7 +848,8 @@ namespace sysio { namespace vm {
       }
 
       template <typename Visitor, typename... Args>
-      inline std::optional<operand_stack_elem> execute(host_type* host, Visitor&& visitor, uint32_t func_index, Args&&... args) {
+      inline std::optional<operand_stack_elem> execute(host_type* host, Visitor&& visitor, uint32_t func_index,
+                                                       Args&&... args) {
          SYS_VM_ASSERT(func_index < std::numeric_limits<uint32_t>::max(), wasm_interpreter_exception,
                        "cannot execute function, function not found");
 
@@ -777,9 +858,9 @@ namespace sysio { namespace vm {
          // save the state of the original calling context
          execution_state saved_state = _state;
 
-         _state.host             = host;
-         _state.as_index         = _as.size();
-         _state.os_index         = get_operand_stack().size();
+         _state.host     = host;
+         _state.as_index = _as.size();
+         _state.os_index = get_operand_stack().size();
 
          auto cleanup = scope_guard([&]() {
             get_operand_stack().eat(_state.os_index);
@@ -798,9 +879,8 @@ namespace sysio { namespace vm {
          } else {
             _state.pc = _mod->get_function_pc(func_index);
             setup_locals(func_index);
-            vm::invoke_with_signal_handler([&]() {
-               execute(std::forward<Visitor>(visitor));
-            }, &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+            vm::invoke_with_signal_handler([&]() { execute(std::forward<Visitor>(visitor)); }, &handle_signal,
+                                           _mod->allocator, base_type::get_wasm_allocator());
          }
 
          if (_mod->get_function_type(func_index).return_count && !_state.exiting) {
@@ -825,29 +905,25 @@ namespace sysio { namespace vm {
       // It's only used for profiling.
       int backtrace(void** data, int limit, void* uc) const {
          int out = 0;
-         if(limit != 0) {
+         if (limit != 0) {
             data[out++] = _state.pc;
          }
-         for(int i = 0; out < limit && i < _as.size(); ++i) {
-            data[out++] = _as.get_back(i).pc;
-         }
+         for (int i = 0; out < limit && i < _as.size(); ++i) { data[out++] = _as.get_back(i).pc; }
          return out;
       }
 
     private:
-
       template <typename... Args>
       void push_args(Args&&... args) {
          auto tc = detail::type_converter_t<Host>{ _host, get_interface() };
          (void)tc;
-         (... , push_operand(detail::resolve_result(tc, std::forward<Args>(args))));
+         (..., push_operand(detail::resolve_result(tc, std::decay_t<Args>(std::forward<Args>(args)))));
       }
 
       inline void setup_locals(uint32_t index) {
          const auto& fn = _mod->code[index - _mod->get_imported_functions_size()];
          for (uint32_t i = 0; i < fn.locals.size(); i++) {
-            for (uint32_t j = 0; j < fn.locals[i].count; j++)
-               switch (fn.locals[i].type) {
+            for (uint32_t j = 0; j < fn.locals[i].count; j++) switch (fn.locals[i].type) {
                   case types::i32: push_operand(i32_const_t{ (uint32_t)0 }); break;
                   case types::i64: push_operand(i64_const_t{ (uint64_t)0 }); break;
                   case types::f32: push_operand(f32_const_t{ (uint32_t)0 }); break;
@@ -858,61 +934,51 @@ namespace sysio { namespace vm {
       }
 
 #define CREATE_TABLE_ENTRY(NAME, CODE) &&ev_label_##NAME,
-#define CREATE_LABEL(NAME, CODE)                                                                                  \
-      ev_label_##NAME : std::forward<Visitor>(visitor)(ev_variant->template get<sysio::vm::SYS_VM_OPCODE_T(NAME)>()); \
-      ev_variant = _state.pc; \
-      goto* dispatch_table[ev_variant->index()];
-#define CREATE_EXIT_LABEL(NAME, CODE) ev_label_##NAME : \
-      return;
-#define CREATE_EMPTY_LABEL(NAME, CODE) ev_label_##NAME :  \
-      throw wasm_interpreter_exception{"empty operand"};
+#define CREATE_LABEL(NAME, CODE)                                                                                       \
+   ev_label_##NAME : std::forward<Visitor>(visitor)(ev_variant->template get<sysio::vm::SYS_VM_OPCODE_T(NAME)>());     \
+   ev_variant = _state.pc;                                                                                             \
+   goto* dispatch_table[ev_variant->index()];
+#define CREATE_EXIT_LABEL(NAME, CODE) ev_label_##NAME : return;
+#define CREATE_EMPTY_LABEL(NAME, CODE) ev_label_##NAME : throw wasm_interpreter_exception{ "empty operand" };
 
       template <typename Visitor>
       void execute(Visitor&& visitor) {
          static void* dispatch_table[] = {
-            SYS_VM_CONTROL_FLOW_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_BR_TABLE_OP(CREATE_TABLE_ENTRY)
-            SYS_VM_RETURN_OP(CREATE_TABLE_ENTRY)
-            SYS_VM_CALL_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_CALL_IMM_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_PARAMETRIC_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_VARIABLE_ACCESS_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_MEMORY_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_I32_CONSTANT_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_I64_CONSTANT_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_F32_CONSTANT_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_F64_CONSTANT_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_COMPARISON_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_NUMERIC_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_CONVERSION_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_EXIT_OP(CREATE_TABLE_ENTRY)
-            SYS_VM_EMPTY_OPS(CREATE_TABLE_ENTRY)
-            SYS_VM_ERROR_OPS(CREATE_TABLE_ENTRY)
-            &&__ev_last
+            SYS_VM_CONTROL_FLOW_OPS(CREATE_TABLE_ENTRY) SYS_VM_BR_TABLE_OP(CREATE_TABLE_ENTRY) SYS_VM_RETURN_OP(
+                  CREATE_TABLE_ENTRY) SYS_VM_CALL_OPS(CREATE_TABLE_ENTRY) SYS_VM_CALL_IMM_OPS(CREATE_TABLE_ENTRY)
+                  SYS_VM_PARAMETRIC_OPS(CREATE_TABLE_ENTRY) SYS_VM_VARIABLE_ACCESS_OPS(CREATE_TABLE_ENTRY)
+                        SYS_VM_MEMORY_OPS(CREATE_TABLE_ENTRY) SYS_VM_I32_CONSTANT_OPS(CREATE_TABLE_ENTRY)
+                              SYS_VM_I64_CONSTANT_OPS(CREATE_TABLE_ENTRY) SYS_VM_F32_CONSTANT_OPS(CREATE_TABLE_ENTRY)
+                                    SYS_VM_F64_CONSTANT_OPS(CREATE_TABLE_ENTRY) SYS_VM_COMPARISON_OPS(
+                                          CREATE_TABLE_ENTRY) SYS_VM_NUMERIC_OPS(CREATE_TABLE_ENTRY)
+                                          SYS_VM_CONVERSION_OPS(CREATE_TABLE_ENTRY) SYS_VM_EXIT_OP(CREATE_TABLE_ENTRY)
+                                                SYS_VM_EMPTY_OPS(CREATE_TABLE_ENTRY)
+                                                      SYS_VM_ERROR_OPS(CREATE_TABLE_ENTRY) &&
+            __ev_last
          };
          auto* ev_variant = _state.pc;
-         goto *dispatch_table[ev_variant->index()];
+         goto* dispatch_table[ev_variant->index()];
          while (1) {
-             SYS_VM_CONTROL_FLOW_OPS(CREATE_LABEL);
-             SYS_VM_BR_TABLE_OP(CREATE_LABEL);
-             SYS_VM_RETURN_OP(CREATE_LABEL);
-             SYS_VM_CALL_OPS(CREATE_LABEL);
-             SYS_VM_CALL_IMM_OPS(CREATE_LABEL);
-             SYS_VM_PARAMETRIC_OPS(CREATE_LABEL);
-             SYS_VM_VARIABLE_ACCESS_OPS(CREATE_LABEL);
-             SYS_VM_MEMORY_OPS(CREATE_LABEL);
-             SYS_VM_I32_CONSTANT_OPS(CREATE_LABEL);
-             SYS_VM_I64_CONSTANT_OPS(CREATE_LABEL);
-             SYS_VM_F32_CONSTANT_OPS(CREATE_LABEL);
-             SYS_VM_F64_CONSTANT_OPS(CREATE_LABEL);
-             SYS_VM_COMPARISON_OPS(CREATE_LABEL);
-             SYS_VM_NUMERIC_OPS(CREATE_LABEL);
-             SYS_VM_CONVERSION_OPS(CREATE_LABEL);
-             SYS_VM_EXIT_OP(CREATE_EXIT_LABEL);
-             SYS_VM_EMPTY_OPS(CREATE_EMPTY_LABEL);
-             SYS_VM_ERROR_OPS(CREATE_LABEL);
-             __ev_last:
-                throw wasm_interpreter_exception{"should never reach here"};
+            SYS_VM_CONTROL_FLOW_OPS(CREATE_LABEL);
+            SYS_VM_BR_TABLE_OP(CREATE_LABEL);
+            SYS_VM_RETURN_OP(CREATE_LABEL);
+            SYS_VM_CALL_OPS(CREATE_LABEL);
+            SYS_VM_CALL_IMM_OPS(CREATE_LABEL);
+            SYS_VM_PARAMETRIC_OPS(CREATE_LABEL);
+            SYS_VM_VARIABLE_ACCESS_OPS(CREATE_LABEL);
+            SYS_VM_MEMORY_OPS(CREATE_LABEL);
+            SYS_VM_I32_CONSTANT_OPS(CREATE_LABEL);
+            SYS_VM_I64_CONSTANT_OPS(CREATE_LABEL);
+            SYS_VM_F32_CONSTANT_OPS(CREATE_LABEL);
+            SYS_VM_F64_CONSTANT_OPS(CREATE_LABEL);
+            SYS_VM_COMPARISON_OPS(CREATE_LABEL);
+            SYS_VM_NUMERIC_OPS(CREATE_LABEL);
+            SYS_VM_CONVERSION_OPS(CREATE_LABEL);
+            SYS_VM_EXIT_OP(CREATE_EXIT_LABEL);
+            SYS_VM_EMPTY_OPS(CREATE_EMPTY_LABEL);
+            SYS_VM_ERROR_OPS(CREATE_LABEL);
+         __ev_last:
+            throw wasm_interpreter_exception{ "should never reach here" };
          }
       }
 
@@ -921,20 +987,18 @@ namespace sysio { namespace vm {
 #undef CREATE_TABLE_ENTRY
 
       struct execution_state {
-         host_type* host           = nullptr;
-         uint32_t as_index         = 0;
-         uint32_t os_index         = 0;
-         opcode*  pc               = nullptr;
-         bool     exiting          = false;
+         host_type* host     = nullptr;
+         uint32_t   as_index = 0;
+         uint32_t   os_index = 0;
+         opcode*    pc       = nullptr;
+         bool       exiting  = false;
       };
 
-      bounded_allocator _base_allocator = {
-         (constants::max_call_depth + 1) * sizeof(activation_frame)
-      };
-      execution_state _state;
-      uint32_t                        _last_op_index    = 0;
-      call_stack                      _as = { _base_allocator };
-      opcode                          _halt;
-      host_type*                      _host = nullptr;
+      bounded_allocator _base_allocator = { (constants::max_call_depth + 1) * sizeof(activation_frame) };
+      execution_state   _state;
+      uint32_t          _last_op_index = 0;
+      call_stack        _as            = { _base_allocator };
+      opcode            _halt;
+      host_type*        _host = nullptr;
    };
 }} // namespace sysio::vm

@@ -4,22 +4,94 @@
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/span.hpp>
 
+#include <atomic>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <map>
-#include <set>
 #include <memory>
-#include <atomic>
 #include <mutex>
+#include <set>
 #include <utility>
 #include <vector>
 
 #include <sys/mman.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#   include <pthread.h>
+#endif
 #include <unistd.h>
 
+#if defined(__APPLE__) && defined(__aarch64__) && !defined(MAP_JIT)
+#   error "Apple Silicon sys-vm-jit requires MAP_JIT support"
+#endif
+
 namespace sysio { namespace vm {
+   namespace detail {
+#if defined(__APPLE__) && defined(__aarch64__)
+      /// True when executable JIT pages use Apple's per-thread write-protection API.
+      inline constexpr bool use_apple_jit_write_protect = true;
+#else
+      /// True when executable JIT pages use Apple's per-thread write-protection API.
+      inline constexpr bool use_apple_jit_write_protect = false;
+#endif
+
+      /// Returns the platform-specific executable-memory mapping flags for JIT segments.
+      inline int jit_segment_flags() {
+         int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(__APPLE__) && defined(__aarch64__)
+         flags |= MAP_JIT;
+#endif
+         return flags;
+      }
+
+      /// Returns the initial JIT segment protection for the current platform.
+      inline int jit_segment_protection() {
+#if defined(__APPLE__) && defined(__aarch64__)
+         return PROT_READ | PROT_WRITE | PROT_EXEC;
+#else
+         return PROT_READ | PROT_WRITE;
+#endif
+      }
+
+      /// Returns the executable protection used by non-Apple JIT pages after code emission.
+      inline int executable_code_protection() {
+#if defined(__APPLE__) && defined(__aarch64__)
+         return PROT_READ | PROT_WRITE | PROT_EXEC;
+#else
+         return PROT_EXEC;
+#endif
+      }
+
+      /// Toggles Apple Silicon's per-thread JIT write protection. Other platforms are no-ops.
+      inline void set_jit_write_protect(bool enabled) {
+#if defined(__APPLE__) && defined(__aarch64__)
+         pthread_jit_write_protect_np(enabled);
+#else
+         (void)enabled;
+#endif
+      }
+
+      /// Opens and closes the Apple Silicon per-thread JIT write window for generated-code updates.
+      class jit_write_scope {
+       public:
+         /// Opens a per-thread JIT write window on Apple Silicon.
+         jit_write_scope() { set_jit_write_protect(false); }
+
+         /// Restores per-thread JIT write protection before generated code can execute.
+         ~jit_write_scope() { set_jit_write_protect(true); }
+
+         jit_write_scope(const jit_write_scope&)            = delete;
+         jit_write_scope& operator=(const jit_write_scope&) = delete;
+      };
+
+      /// Flushes the instruction cache for generated or patched native code.
+      inline void flush_instruction_cache(void* begin, std::size_t size) {
+         auto* first = static_cast<char*>(begin);
+         __builtin___clear_cache(first, first + size);
+      }
+   } // namespace detail
+
    class bounded_allocator {
     public:
       bounded_allocator(size_t size) {
@@ -35,7 +107,7 @@ namespace sysio { namespace vm {
       }
 
       template <typename T>
-      void reclaim(const T* ptr, size_t size=0) { /* noop for now */ }
+      void reclaim(const T* ptr, size_t size = 0) { /* noop for now */ }
 
       void free() {
          SYS_VM_ASSERT(index > 0, wasm_double_free, "double free");
@@ -54,10 +126,10 @@ namespace sysio { namespace vm {
    class stack_allocator {
     public:
       explicit stack_allocator(std::size_t min_size) {
-         if(min_size > 4*1024*1024) {
+         if (min_size > 4 * 1024 * 1024) {
             std::size_t pagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-            _size = ((min_size + pagesize - 1) & ~(pagesize - 1)) + 4*1024*1024;
-            int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+            _size                = ((min_size + pagesize - 1) & ~(pagesize - 1)) + 4 * 1024 * 1024;
+            int flags            = MAP_PRIVATE | MAP_ANONYMOUS;
 #ifdef MAP_STACK
             flags |= MAP_STACK;
 #endif
@@ -65,75 +137,79 @@ namespace sysio { namespace vm {
          }
       }
       ~stack_allocator() {
-         if(_ptr) {
+         if (_ptr) {
             ::munmap(_ptr, _size);
          }
       }
       void* top() const {
-         if(_ptr) {
+         if (_ptr) {
             return static_cast<char*>(_ptr) + _size;
          } else {
             return nullptr;
          }
       }
-   private:
-      void* _ptr = nullptr;
+
+    private:
+      void*       _ptr = nullptr;
       std::size_t _size;
    };
 
    class contiguous_allocator {
-      public:
-         template<std::size_t align_amt>
-         static constexpr size_t align_offset(size_t offset) { return (offset + align_amt - 1) & ~(align_amt - 1); }
+    public:
+      template <std::size_t align_amt>
+      static constexpr size_t align_offset(size_t offset) {
+         return (offset + align_amt - 1) & ~(align_amt - 1);
+      }
 
-         static std::size_t align_to_page(std::size_t offset) {
-            std::size_t pagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-            return (offset + pagesize - 1) & ~(pagesize - 1);
+      static std::size_t align_to_page(std::size_t offset) {
+         std::size_t pagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+         return (offset + pagesize - 1) & ~(pagesize - 1);
+      }
+
+      contiguous_allocator(size_t size) {
+         _size = align_to_page(size);
+         _base = (char*)mmap(NULL, _size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         SYS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
+      }
+      ~contiguous_allocator() { munmap(_base, align_to_page(_size)); }
+
+      template <typename T>
+      T* alloc(size_t size = 0) {
+         _offset        = align_offset<alignof(T)>(_offset);
+         size_t aligned = (sizeof(T) * size) + _offset;
+         if (aligned > _size) {
+            size_t new_size = align_to_page(aligned);
+            char*  new_base = (char*)mmap(NULL, new_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+            SYS_VM_ASSERT(new_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
+            memcpy(new_base, _base, _size);
+            munmap(_base, _size);
+            _size = new_size;
+            _base = new_base;
          }
+         T* ptr  = (T*)(_base + _offset);
+         _offset = aligned;
+         return ptr;
+      }
+      template <typename T>
+      void reclaim(const T* ptr, size_t size = 0) { /* noop for now */ }
+      void free() { /* noop for now */ }
 
-         contiguous_allocator(size_t size) {
-            _size = align_to_page(size);
-            _base = (char*)mmap(NULL, _size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-            SYS_VM_ASSERT(_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
-         }
-         ~contiguous_allocator() { munmap(_base, align_to_page(_size)); }
-
-         template <typename T>
-         T* alloc(size_t size = 0) {
-            _offset = align_offset<alignof(T)>(_offset);
-            size_t aligned = (sizeof(T) * size) + _offset;
-            if (aligned > _size) {
-               size_t new_size = align_to_page(aligned);
-               char* new_base = (char*)mmap(NULL, new_size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-               SYS_VM_ASSERT(new_base != MAP_FAILED, wasm_bad_alloc, "mmap failed.");
-               memcpy(new_base, _base, _size);
-               munmap(_base, _size);
-               _size = new_size;
-               _base = new_base;
-            }
-            T* ptr = (T*)(_base + _offset);
-            _offset = aligned;
-            return ptr;
-         }
-         template <typename T>
-         void reclaim(const T* ptr, size_t size=0) { /* noop for now */ }
-         void free() { /* noop for now */ }
-
-      private:
-         size_t _offset = 0;
-         size_t _size   = 0;
-         char*  _base;
+    private:
+      size_t _offset = 0;
+      size_t _size   = 0;
+      char*  _base;
    };
 
    class jit_allocator {
-       static constexpr std::size_t segment_size = std::size_t{1024u} * 1024u * 1024u;
-   public:
+      static constexpr std::size_t segment_size = std::size_t{ 1024u } * 1024u * 1024u;
+
+    public:
       // allocates page aligned memory with executable permission
-      void * alloc(std::size_t size) {
-         std::lock_guard l{_mutex};
-         size = round_to_page(size);
+      void* alloc(std::size_t size) {
+         std::lock_guard l{ _mutex };
+         size      = round_to_page(size);
          auto best = free_blocks_by_size.lower_bound(size);
-         if(best == free_blocks_by_size.end()) {
+         if (best == free_blocks_by_size.end()) {
             best = allocate_segment(size);
          }
          if (best->first > size) {
@@ -145,12 +221,12 @@ namespace sysio { namespace vm {
       }
       // ptr must be previously allocated by a call to alloc
       void free(void* ptr) noexcept {
-         std::lock_guard l{_mutex};
-         auto pos = transfer_node(allocated_blocks, free_blocks, ptr);
-         transfer_node(allocated_blocks_by_size, free_blocks_by_size, {pos->second, pos->first});
+         std::lock_guard l{ _mutex };
+         auto            pos = transfer_node(allocated_blocks, free_blocks, ptr);
+         transfer_node(allocated_blocks_by_size, free_blocks_by_size, { pos->second, pos->first });
 
          // merge the freed block with adjacent free blocks
-         if(pos != free_blocks.begin()) {
+         if (pos != free_blocks.begin()) {
             auto prev = pos;
             --prev;
             pos = maybe_consolidate_blocks(prev, pos);
@@ -165,20 +241,21 @@ namespace sysio { namespace vm {
          static jit_allocator the_jit_allocator;
          return the_jit_allocator;
       }
-   private:
+
+    private:
       struct segment {
-         segment(void * base, std::size_t size) : base(base), size(size) {}
+         segment(void* base, std::size_t size) : base(base), size(size) {}
          segment(segment&& other) : base(other.base), size(other.size) {
             other.base = nullptr;
             other.size = 0;
          }
          segment& operator=(const segment& other) = delete;
          ~segment() {
-            if(base) {
+            if (base) {
                ::munmap(base, size);
             }
          }
-         void * base;
+         void*       base;
          std::size_t size;
       };
       using block = std::pair<std::size_t, void*>;
@@ -187,25 +264,21 @@ namespace sysio { namespace vm {
          bool operator()(const block& lhs, const block& rhs) const {
             return lhs.first < rhs.first || (lhs.first == rhs.first && std::less<void*>{}(lhs.second, rhs.second));
          }
-         bool operator()(const block& lhs, std::size_t rhs) const {
-            return lhs.first < rhs;
-         }
-         bool operator()(std::size_t lhs, const block& rhs) const {
-            return lhs < rhs.first;
-         }
+         bool operator()(const block& lhs, std::size_t rhs) const { return lhs.first < rhs; }
+         bool operator()(std::size_t lhs, const block& rhs) const { return lhs < rhs.first; }
       };
-      std::vector<segment> _segments;
-      std::set<block, by_size> free_blocks_by_size;
-      std::set<block, by_size> allocated_blocks_by_size;
+      std::vector<segment>         _segments;
+      std::set<block, by_size>     free_blocks_by_size;
+      std::set<block, by_size>     allocated_blocks_by_size;
       std::map<void*, std::size_t> free_blocks;
       std::map<void*, std::size_t> allocated_blocks;
-      std::mutex _mutex;
+      std::mutex                   _mutex;
       using blocks_by_size_t = std::set<block, by_size>;
-      using blocks_t = std::map<void*, size_t>;
+      using blocks_t         = std::map<void*, size_t>;
 
       // moves an element from one associative container to another
       // @pre key must be present in from, but not in to
-      template<typename C>
+      template <typename C>
       static typename C::iterator transfer_node(C& from, C& to, typename C::key_type key) noexcept {
          auto node = from.extract(key);
          assert(node);
@@ -216,45 +289,58 @@ namespace sysio { namespace vm {
 
       blocks_by_size_t::iterator allocate_segment(std::size_t min_size) {
          std::size_t size = std::max(min_size, segment_size);
-         // To avoid additional memory mappings being created during permission changes of
-         // from PROT_EXEC to PROT_READ | PROT_WRITE, and back to PROT_EXEC,
-         // set permisions to PROT_READ | PROT_WRITE initially.
-         // The permission will be changed to PROT_EXEC after executible code is copied.
-         void* base = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         // Apple Silicon requires MAP_JIT at mapping creation time; other platforms keep the existing RW-to-X flow.
+         void* base = mmap(nullptr, size, detail::jit_segment_protection(), detail::jit_segment_flags(), -1, 0);
          SYS_VM_ASSERT(base != MAP_FAILED, wasm_bad_alloc, "failed to allocate jit segment");
-         segment s{base, size};
+         segment s{ base, size };
          _segments.emplace_back(std::move(s));
          bool success = false;
-         auto guard_1 = scope_guard{[&] { if(!success) { _segments.pop_back(); } }};
-         auto pos2 = free_blocks_by_size.insert({size, base}).first;
-         auto guard_2 = scope_guard{[&] { if(!success) { free_blocks_by_size.erase(pos2); }}};
-         free_blocks.insert({base, size});
+         auto guard_1 = scope_guard{ [&] {
+            if (!success) {
+               _segments.pop_back();
+            }
+         } };
+         auto pos2    = free_blocks_by_size.insert({ size, base }).first;
+         auto guard_2 = scope_guard{ [&] {
+            if (!success) {
+               free_blocks_by_size.erase(pos2);
+            }
+         } };
+         free_blocks.insert({ base, size });
          success = true;
          return pos2;
       }
 
       blocks_by_size_t::iterator split_block(blocks_by_size_t::iterator pos, std::size_t size) {
          bool success = false;
-         auto new1 = free_blocks_by_size.insert({size, pos->second}).first;
-         auto guard1 = scope_guard{[&]{ if(!success) { free_blocks_by_size.erase(new1); } }};
-         auto new2 = free_blocks_by_size.insert({pos->first - size, static_cast<char*>(pos->second) + size}).first;
-         auto guard2 = scope_guard{[&]{ if(!success) { free_blocks_by_size.erase(new2); } }};
-         free_blocks.insert({new2->second, new2->first});
+         auto new1    = free_blocks_by_size.insert({ size, pos->second }).first;
+         auto guard1  = scope_guard{ [&] {
+            if (!success) {
+               free_blocks_by_size.erase(new1);
+            }
+         } };
+         auto new2   = free_blocks_by_size.insert({ pos->first - size, static_cast<char*>(pos->second) + size }).first;
+         auto guard2 = scope_guard{ [&] {
+            if (!success) {
+               free_blocks_by_size.erase(new2);
+            }
+         } };
+         free_blocks.insert({ new2->second, new2->first });
          // the rest is nothrow
          free_blocks_by_size.erase(pos);
          free_blocks[new1->second] = new1->first;
-         success = true;
+         success                   = true;
          return new1;
       }
 
       blocks_t::iterator maybe_consolidate_blocks(blocks_t::iterator lhs, blocks_t::iterator rhs) noexcept {
-         if(static_cast<char*>(lhs->first) + lhs->second == rhs->first) {
+         if (static_cast<char*>(lhs->first) + lhs->second == rhs->first) {
             // merge blocks in free_blocks_by_size
-            auto node = free_blocks_by_size.extract({lhs->second, lhs->first});
+            auto node = free_blocks_by_size.extract({ lhs->second, lhs->first });
             assert(node);
             node.value().first += rhs->second;
             free_blocks_by_size.insert(std::move(node));
-            free_blocks_by_size.erase({rhs->second, rhs->first});
+            free_blocks_by_size.erase({ rhs->second, rhs->first });
             // merge the blocks in free_blocks
             lhs->second += rhs->second;
             free_blocks.erase(rhs);
@@ -273,8 +359,10 @@ namespace sysio { namespace vm {
    class growable_allocator {
     public:
       static constexpr size_t max_memory_size = 1024 * 1024 * 1024; // 1GB
-      template<std::size_t align_amt>
-      static constexpr size_t align_offset(size_t offset) { return (offset + align_amt - 1) & ~(align_amt - 1); }
+      template <std::size_t align_amt>
+      static constexpr size_t align_offset(size_t offset) {
+         return (offset + align_amt - 1) & ~(align_amt - 1);
+      }
 
       static std::size_t align_to_page(std::size_t offset) {
          std::size_t pagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
@@ -310,6 +398,9 @@ namespace sysio { namespace vm {
       }
 
       ~growable_allocator() {
+         if (_code_disabled.load(std::memory_order_acquire)) {
+            enable_code(_is_jit);
+         }
          if (_base != nullptr) {
             munmap(_base, _capacity);
          }
@@ -326,9 +417,9 @@ namespace sysio { namespace vm {
          _offset = align_offset<alignof(T)>(_offset);
          // Evaluating the inequality in this form cannot cause integer overflow.
          // Once this assertion passes, the rest of the function is safe.
-         SYS_VM_ASSERT ((_capacity - _offset) / sizeof(T) >= size, wasm_bad_alloc, "Allocated too much memory");
+         SYS_VM_ASSERT((_capacity - _offset) / sizeof(T) >= size, wasm_bad_alloc, "Allocated too much memory");
          size_t aligned = (sizeof(T) * size) + _offset;
-         SYS_VM_ASSERT (aligned <= _capacity, wasm_bad_alloc, "Allocated too much memory after aligned");
+         SYS_VM_ASSERT(aligned <= _capacity, wasm_bad_alloc, "Allocated too much memory after aligned");
 
          T* ptr  = (T*)(_base + _offset);
          _offset = aligned;
@@ -338,68 +429,111 @@ namespace sysio { namespace vm {
          return ptr;
       }
 
-      void * start_code() {
+      void* start_code() {
          _offset = align_to_page(_offset);
          return _base + _offset;
       }
-      template<bool IsJit>
-      void end_code(void * code_base) {
+      template <bool IsJit>
+      void end_code(void* code_base) {
          assert((char*)code_base >= _base);
-         assert((char*)code_base <= (_base+_offset));
-         _offset = align_to_page(_offset);
+         assert((char*)code_base <= (_base + _offset));
+         _offset    = align_to_page(_offset);
          _code_base = (char*)code_base;
          _code_size = _offset - ((char*)code_base - _base);
          if constexpr (IsJit) {
-            auto & jit_alloc = jit_allocator::instance();
-            void * executable_code = jit_alloc.alloc(_code_size);
-            int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
-            SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
-            std::memcpy(executable_code, _code_base, _code_size);
+            auto& jit_alloc       = jit_allocator::instance();
+            void* executable_code = jit_alloc.alloc(_code_size);
+            if constexpr (detail::use_apple_jit_write_protect) {
+               detail::jit_write_scope write_scope;
+               std::memcpy(executable_code, _code_base, _code_size);
+            } else {
+               int err = mprotect(executable_code, _code_size, PROT_READ | PROT_WRITE);
+               SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
+               std::memcpy(executable_code, _code_base, _code_size);
+            }
+            detail::flush_instruction_cache(executable_code, _code_size);
             _code_base = (char*)executable_code;
-            enable_code(IsJit);
+            SYS_VM_ASSERT(enable_code(IsJit), wasm_bad_alloc, "mprotect failed");
             _is_jit = true;
             _offset = (char*)code_base - _base;
          }
       }
 
-      // Sets protection on code pages to allow them to be executed.
-      void enable_code(bool is_jit) {
-         mprotect(_code_base, _code_size, is_jit?PROT_EXEC:(PROT_READ|PROT_WRITE));
+      /// Sets protection on code pages to allow them to be executed.
+      bool enable_code(bool is_jit) {
+         if (is_jit) {
+            if constexpr (detail::use_apple_jit_write_protect) {
+               if (_code_disabled.load(std::memory_order_acquire)) {
+                  detail::set_jit_write_protect(false);
+                  int err = mprotect(_code_base, _code_size, detail::executable_code_protection());
+                  detail::set_jit_write_protect(true);
+                  if (err != 0)
+                     return false;
+                  _code_disabled.store(false, std::memory_order_release);
+               }
+               return true;
+            } else {
+               int err = mprotect(_code_base, _code_size, detail::executable_code_protection());
+               if (err != 0)
+                  return false;
+               _code_disabled.store(false, std::memory_order_release);
+               return true;
+            }
+         } else {
+            int err = mprotect(_code_base, _code_size, PROT_READ | PROT_WRITE);
+            if (err != 0)
+               return false;
+            _code_disabled.store(false, std::memory_order_release);
+            return true;
+         }
       }
-      // Make code pages unexecutable so deadline timer can kill an
-      // execution (in both JIT and Interpreter)
-      void disable_code() {
-         mprotect(_code_base, _code_size, PROT_NONE);
+      /// Makes code pages unexecutable so the deadline timer can interrupt execution.
+      bool disable_code() {
+         if constexpr (detail::use_apple_jit_write_protect) {
+            if (_is_jit) {
+               // MAP_JIT pages are controlled by Apple's per-thread write-protection view and cannot be
+               // treated as reliably revoked executable memory. AArch64 JIT timeouts use generated polls.
+               return false;
+            }
+         }
+         int err = mprotect(_code_base, _code_size, PROT_NONE);
+         if (err != 0)
+            return false;
+         _code_disabled.store(true, std::memory_order_release);
+         return true;
       }
+
+      /// Returns true when generated code pages are currently protected as inaccessible.
+      bool code_disabled() const { return _code_disabled.load(std::memory_order_acquire); }
 
       const void* get_code_start() const { return _code_base; }
 
-      span<std::byte> get_code_span() const {return {(std::byte*)_code_base, _code_size};}
+      span<std::byte> get_code_span() const { return { (std::byte*)_code_base, _code_size }; }
 
       /* different semantics than free,
        * the memory must be at the end of the most recently allocated block.
        */
       template <typename T>
-      void reclaim(const T* ptr, size_t size=0) {
-         SYS_VM_ASSERT( _offset / sizeof(T) >= size, wasm_bad_alloc, "reclaimed too much memory" );
-         SYS_VM_ASSERT( size == 0 || (char*)(ptr + size) == (_base + _offset), wasm_bad_alloc, "reclaiming memory must be strictly LIFO");
-         if ( size != 0 )
+      void reclaim(const T* ptr, size_t size = 0) {
+         SYS_VM_ASSERT(_offset / sizeof(T) >= size, wasm_bad_alloc, "reclaimed too much memory");
+         SYS_VM_ASSERT(size == 0 || (char*)(ptr + size) == (_base + _offset), wasm_bad_alloc,
+                       "reclaiming memory must be strictly LIFO");
+         if (size != 0)
             _offset = ((char*)ptr - _base);
       }
 
-      size_t largest_used_size() {
-         return align_to_page(_largest_offset);
-      }
+      size_t largest_used_size() { return align_to_page(_largest_offset); }
 
       /*
        * Finalize the memory by unmapping any excess pages, this means that the allocator will no longer grow
        */
       void finalize() {
-         if(_capacity != _offset) {
+         if (_capacity != _offset) {
             std::size_t final_size = align_to_page(_offset);
             if (final_size < _capacity) { // final_size can grow to _capacity after align_to_page.
                                           // make sure no 0 size passed to munmap
-               SYS_VM_ASSERT(munmap(_base + final_size, _capacity - final_size) == 0, wasm_bad_alloc, "failed to finalize growable_allocator");
+               SYS_VM_ASSERT(munmap(_base + final_size, _capacity - final_size) == 0, wasm_bad_alloc,
+                             "failed to finalize growable_allocator");
                _capacity = _offset = final_size;
                if (final_size == 0) {
                   // _base became invalid after munmap if final_size is 0 so
@@ -412,8 +546,7 @@ namespace sysio { namespace vm {
 
       void free() { SYS_VM_ASSERT(false, wasm_bad_alloc, "unimplemented"); }
 
-      void release_base_memory()
-      {
+      void release_base_memory() {
          if (_base != nullptr) {
             SYS_VM_ASSERT(munmap(_base, _capacity) == 0, wasm_bad_alloc, "failed to release base memory");
             _base = nullptr;
@@ -422,14 +555,15 @@ namespace sysio { namespace vm {
 
       void reset() { _offset = 0; }
 
-      size_t   _offset                = 0;
-      size_t   _largest_offset        = 0;
-      size_t   _capacity              = 0;
-      char*    _base                  = nullptr;
-      char*    _code_base             = nullptr;
-      size_t   _code_size             = 0;
-      bool     _is_jit                = false;
-      std::atomic<uint32_t> timed_run_in_progress{0};
+      size_t                _offset         = 0;
+      size_t                _largest_offset = 0;
+      size_t                _capacity       = 0;
+      char*                 _base           = nullptr;
+      char*                 _code_base      = nullptr;
+      size_t                _code_size      = 0;
+      bool                  _is_jit         = false;
+      std::atomic<uint32_t> timed_run_in_progress{ 0 };
+      std::atomic<bool>     _code_disabled{ false };
    };
 
    template <typename T>
@@ -445,7 +579,7 @@ namespace sysio { namespace vm {
       }
       fixed_stack_allocator(size_t max_size) : max_size(max_size) {
          raw = (T*)mmap(NULL, max_memory, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         SYS_VM_ASSERT( raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages" );
+         SYS_VM_ASSERT(raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages");
          mprotect(raw, max_size * sizeof(T), PROT_READ | PROT_WRITE);
       }
       inline T* get_base_ptr() const { return raw; }
@@ -453,24 +587,26 @@ namespace sysio { namespace vm {
 
    class wasm_allocator {
     private:
-      char*   raw       = nullptr;
-      int32_t page      = 0;
+      char*   raw  = nullptr;
+      int32_t page = 0;
 
     public:
       template <typename T>
       void alloc(size_t size = 1 /*in pages*/) {
-         if (size == 0) return;
+         if (size == 0)
+            return;
          SYS_VM_ASSERT(page >= 0, wasm_bad_alloc, "require memory to allocate");
          SYS_VM_ASSERT(size + page <= max_pages, wasm_bad_alloc, "exceeded max number of pages");
          int err = mprotect(raw + (page_size * page), (page_size * size), PROT_READ | PROT_WRITE);
          SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
-         T* ptr    = (T*)(raw + (page_size * page));
+         T* ptr = (T*)(raw + (page_size * page));
          memset(ptr, 0, page_size * size);
          page += size;
       }
       template <typename T>
       void free(std::size_t size) {
-         if (size == 0) return;
+         if (size == 0)
+            return;
          SYS_VM_ASSERT(page >= 0, wasm_bad_alloc, "require memory to deallocate");
          SYS_VM_ASSERT(size <= static_cast<uint32_t>(page), wasm_bad_alloc, "freed too many pages");
          page -= size;
@@ -479,8 +615,8 @@ namespace sysio { namespace vm {
       }
       wasm_allocator() {
          std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-         raw  = (char*)mmap(NULL, max_memory + 2*syspagesize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-         SYS_VM_ASSERT( raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages" );
+         raw = (char*)mmap(NULL, max_memory + 2 * syspagesize, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         SYS_VM_ASSERT(raw != MAP_FAILED, wasm_bad_alloc, "mmap failed to alloca pages");
          int err = mprotect(raw, syspagesize, PROT_READ);
          SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
          raw += syspagesize;
@@ -488,7 +624,8 @@ namespace sysio { namespace vm {
       }
       ~wasm_allocator() {
          std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-         munmap(raw - syspagesize, max_memory + 2*syspagesize); // raw is never null after wasm_allocator is constructed
+         munmap(raw - syspagesize,
+                max_memory + 2 * syspagesize); // raw is never null after wasm_allocator is constructed
       }
       // Initializes the memory controlled by the allocator.
       //
@@ -499,13 +636,13 @@ namespace sysio { namespace vm {
             memset(raw, '\0', page_size * page); // zero the memory
          } else {
             std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-            int err = mprotect(raw - syspagesize, syspagesize, PROT_READ);
+            int         err         = mprotect(raw - syspagesize, syspagesize, PROT_READ);
             SYS_VM_ASSERT(err == 0, wasm_bad_alloc, "mprotect failed");
             page = 0;
          }
-         if(new_pages > static_cast<uint32_t>(page)) {
+         if (new_pages > static_cast<uint32_t>(page)) {
             alloc<char>(new_pages - page);
-         } else if(new_pages < static_cast<uint32_t>(page)) {
+         } else if (new_pages < static_cast<uint32_t>(page)) {
             free<char>(page - new_pages);
          }
       }
@@ -526,13 +663,15 @@ namespace sysio { namespace vm {
          return reinterpret_cast<T*>(raw);
       }
       template <typename T>
-      inline T* create_pointer(uint32_t offset) { return reinterpret_cast<T*>(raw + offset); }
+      inline T* create_pointer(uint32_t offset) {
+         return reinterpret_cast<T*>(raw + offset);
+      }
       inline int32_t get_current_page() const { return page; }
-      bool is_in_region(char* p) { return p >= raw && p < raw + max_memory; }
+      bool           is_in_region(char* p) { return p >= raw && p < raw + max_memory; }
 
       span<std::byte> get_span() const {
          const std::size_t syspagesize = static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
-         return {(std::byte*)raw - syspagesize, max_memory + 2*syspagesize};
+         return { (std::byte*)raw - syspagesize, max_memory + 2 * syspagesize };
       }
    };
 }} // namespace sysio::vm

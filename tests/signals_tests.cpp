@@ -35,12 +35,15 @@ TEST_CASE("Testing throw", "[signal_handler_throw]") {
 }
 
 static volatile sig_atomic_t sig_handled;
+static volatile sig_atomic_t sig_handled_count;
 
 static void handle_signal(int sig) {
+   sig_handled_count = sig_handled_count + 1;
    sig_handled = 42 + sig;
 }
 
 static void handle_signal_sigaction(int sig, siginfo_t* info, void* uap) {
+   sig_handled_count = sig_handled_count + 1;
    sig_handled = 142 + sig;
 }
 
@@ -58,16 +61,22 @@ TEST_CASE("Test signal handler forwarding", "[signal_handler_forward]") {
       std::signal(SIGFPE, &handle_signal);
       sysio::vm::setup_signal_handler_impl();
       sig_handled = 0;
+      sig_handled_count = 0;
       std::raise(SIGSEGV);
       CHECK(sig_handled == 42 + SIGSEGV);
+      CHECK(sig_handled_count == 1);
 #ifndef __linux__
       sig_handled = 0;
+      sig_handled_count = 0;
       std::raise(SIGBUS);
       CHECK(sig_handled == 42 + SIGBUS);
+      CHECK(sig_handled_count == 1);
 #endif
       sig_handled = 0;
+      sig_handled_count = 0;
       std::raise(SIGFPE);
       CHECK(sig_handled == 42 + SIGFPE);
+      CHECK(sig_handled_count == 1);
    }
    {
       struct sigaction sa;
@@ -79,15 +88,21 @@ TEST_CASE("Test signal handler forwarding", "[signal_handler_forward]") {
       sigaction(SIGFPE, &sa, nullptr);
       sysio::vm::setup_signal_handler_impl();
       sig_handled = 0;
+      sig_handled_count = 0;
       std::raise(SIGSEGV);
       CHECK(sig_handled == 142 + SIGSEGV);
+      CHECK(sig_handled_count == 1);
 #ifndef __linux__
       sig_handled = 0;
+      sig_handled_count = 0;
       std::raise(SIGBUS);
       CHECK(sig_handled == 142 + SIGBUS);
+      CHECK(sig_handled_count == 1);
 #endif
       sig_handled = 0;
+      sig_handled_count = 0;
       std::raise(SIGFPE);
       CHECK(sig_handled == 142 + SIGFPE);
+      CHECK(sig_handled_count == 1);
    }
 }

@@ -4,6 +4,7 @@
 
 enable_testing()
 include(FetchContent)
+include(CheckCXXSourceCompiles)
 
 set(CATCH_BUILD_TESTING OFF CACHE BOOL "Disable Catch2 self-tests")
 set(CATCH_INSTALL_DOCS OFF CACHE BOOL "Disable Catch2 documentation install")
@@ -12,7 +13,7 @@ set(CATCH_INSTALL_HELPERS OFF CACHE BOOL "Disable Catch2 helper install")
 FetchContent_Declare(
    Catch2
    GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-   GIT_TAG 9c741fe96073ed620ffc032afbed1f3c789d2b68
+   GIT_TAG v2.13.10
 )
 FetchContent_MakeAvailable(Catch2)
 
@@ -177,11 +178,30 @@ add_executable(unit_tests main.cpp
    watchdog_tests.cpp
    implementation_limits_tests.cpp
    instantiation_tests.cpp
+   aarch64_jit_tests.cpp
    backend_tests.cpp
    vector_tests.cpp)
 setup_vm_target(unit_tests)
 target_link_libraries(unit_tests sys-vm Catch2::Catch2)
 target_compile_definitions(unit_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
+
+set(SYS_VM_CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES})
+set(CMAKE_REQUIRED_INCLUDES "${PROJECT_SOURCE_DIR}/include")
+check_cxx_source_compiles([=[
+#include <sysio/vm/config.hpp>
+#if !SYS_VM_HAS_AARCH64_JIT_BACKEND
+#error AArch64 JIT backend is disabled.
+#endif
+int main() { return 0; }
+]=] SYS_VM_HAS_AARCH64_JIT_BACKEND_FOR_BENCHMARK)
+set(CMAKE_REQUIRED_INCLUDES ${SYS_VM_CMAKE_REQUIRED_INCLUDES})
+unset(SYS_VM_CMAKE_REQUIRED_INCLUDES)
+
+if(SYS_VM_HAS_AARCH64_JIT_BACKEND_FOR_BENCHMARK)
+   add_executable(aarch64_jit_benchmark aarch64_jit_benchmark.cpp)
+   setup_vm_target(aarch64_jit_benchmark)
+   target_link_libraries(aarch64_jit_benchmark sys-vm)
+endif()
 
 # UNIT_TESTS: Discover
 catch_discover_tests(unit_tests)

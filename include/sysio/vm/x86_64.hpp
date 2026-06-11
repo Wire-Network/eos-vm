@@ -168,7 +168,7 @@ namespace sysio { namespace vm {
       }
       void emit_nop() {}
       void* emit_end() { return code; }
-      void* emit_return(uint32_t depth_change) {
+      void* emit_return(uint32_t depth_change, bool /*is_loop_target*/) {
          // Return is defined as equivalent to branching to the outermost label
          return emit_br(depth_change);
       }
@@ -190,7 +190,7 @@ namespace sysio { namespace vm {
          fix_branch(if_loc, code);
          return result;
       }
-      void* emit_br(uint32_t depth_change) {
+      void* emit_br(uint32_t depth_change, bool /*is_loop_target*/ = false) {
          auto icount = variable_size_instr(5, 17);
          // add RSP, depth_change * 8
          emit_multipop(depth_change);
@@ -198,7 +198,7 @@ namespace sysio { namespace vm {
          emit_bytes(0xe9);
          return emit_branch_target32();
       }
-      void* emit_br_if(uint32_t depth_change) {
+      void* emit_br_if(uint32_t depth_change, bool /*is_loop_target*/) {
          auto icount = variable_size_instr(9, 26);
          // pop RAX
          emit_bytes(0x58);
@@ -226,7 +226,7 @@ namespace sysio { namespace vm {
 
       // Generate a binary search.
       struct br_table_generator {
-         void* emit_case(uint32_t depth_change) {
+         void* emit_case(uint32_t depth_change, bool /*is_loop_target*/) {
             while(true) {
                assert(!stack.empty() && "The parser is supposed to handle the number of elements in br_table.");
                auto [min, max, label] = stack.back();
@@ -267,8 +267,8 @@ namespace sysio { namespace vm {
             }
 
          }
-         void* emit_default(uint32_t depth_change) {
-            void* result = emit_case(depth_change);
+         void* emit_default(uint32_t depth_change, bool is_loop_target) {
+            void* result = emit_case(depth_change, is_loop_target);
             assert(stack.empty() && "unexpected default.");
             return result;
          }

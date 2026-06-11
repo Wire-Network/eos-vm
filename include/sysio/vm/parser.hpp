@@ -772,6 +772,10 @@ namespace sysio { namespace vm {
             }
             return result;
          };
+         auto is_loop_target = [&](uint32_t label) -> bool {
+            SYS_VM_ASSERT(label < pc_stack.size(), wasm_parse_exception, "invalid label");
+            return std::holds_alternative<label_t>(pc_stack[pc_stack.size() - label - 1].relocations);
+         };
 
          // Handles branches to the end of the scope and pops the pc_stack
          auto exit_scope = [&]() {
@@ -814,7 +818,7 @@ namespace sysio { namespace vm {
                case opcodes::return_: {
                   check_in_bounds();
                   uint32_t label = pc_stack.size() - 1;
-                  auto branch = code_writer.emit_return(compute_depth_change(label));
+                  auto branch = code_writer.emit_return(compute_depth_change(label), is_loop_target(label));
                   handle_branch_target(label, branch);
                   op_stack.start_unreachable();
                } break;
@@ -879,7 +883,7 @@ namespace sysio { namespace vm {
                case opcodes::br: {
                   check_in_bounds();
                   uint32_t label = parse_varuint32(code);
-                  auto branch = code_writer.emit_br(compute_depth_change(label));
+                  auto branch = code_writer.emit_br(compute_depth_change(label), is_loop_target(label));
                   handle_branch_target(label, branch);
                   op_stack.start_unreachable();
                } break;
@@ -887,7 +891,7 @@ namespace sysio { namespace vm {
                   check_in_bounds();
                   uint32_t label = parse_varuint32(code);
                   op_stack.pop(types::i32);
-                  auto branch = code_writer.emit_br_if(compute_depth_change(label));
+                  auto branch = code_writer.emit_br_if(compute_depth_change(label), is_loop_target(label));
                   handle_branch_target(label, branch);
                } break;
                case opcodes::br_table: {
@@ -899,7 +903,7 @@ namespace sysio { namespace vm {
                   auto handler = code_writer.emit_br_table(table_size);
                   for (size_t i = 0; i < table_size; i++) {
                      uint32_t label = parse_varuint32(code);
-                     auto branch = handler.emit_case(compute_depth_change(label));
+                     auto branch = handler.emit_case(compute_depth_change(label), is_loop_target(label));
                      handle_branch_target(label, branch);
                      uint8_t one_result = pc_stack[pc_stack.size() - label - 1].label_result;
                      if(i == 0) {
@@ -909,7 +913,7 @@ namespace sysio { namespace vm {
                      }
                   }
                   uint32_t label = parse_varuint32(code);
-                  auto branch = handler.emit_default(compute_depth_change(label));
+                  auto branch = handler.emit_default(compute_depth_change(label), is_loop_target(label));
                   handle_branch_target(label, branch);
                   SYS_VM_ASSERT(table_size == 0 || result_type == pc_stack[pc_stack.size() - label - 1].label_result,
                                 wasm_parse_exception, "br_table labels must have the same type");
