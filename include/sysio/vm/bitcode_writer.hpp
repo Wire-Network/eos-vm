@@ -28,7 +28,7 @@ namespace sysio { namespace vm {
       void emit_unreachable() { fb[op_index++] = unreachable_t{}; };
       void emit_nop() { fb[op_index++] = nop_t{}; }
       uint32_t emit_end() { return op_index; }
-      uint32_t* emit_return(uint32_t depth_change) {
+      uint32_t* emit_return(uint32_t depth_change, bool /*is_loop_target*/) {
          return emit_br(depth_change);
       }
       void emit_block() {}
@@ -42,12 +42,12 @@ namespace sysio { namespace vm {
          *if_loc = _base_offset + op_index;
          return &else_.pc;
       }
-      uint32_t * emit_br(uint32_t depth_change) {
+      uint32_t * emit_br(uint32_t depth_change, bool /*is_loop_target*/ = false) {
          auto& instr = append_instr(br_t{});
          instr.data = depth_change;
          return &instr.pc;
       }
-      uint32_t * emit_br_if(uint32_t depth_change) {
+      uint32_t * emit_br_if(uint32_t depth_change, bool /*is_loop_target*/) {
          auto& instr = append_instr(br_if_t{});
          instr.data = depth_change;
          return &instr.pc;
@@ -71,14 +71,14 @@ namespace sysio { namespace vm {
             _this->fb[_this->op_index] = error_t{};
             bt.size           = table_size;
          }
-         uint32_t * emit_case(uint32_t depth_change) {
+         uint32_t * emit_case(uint32_t depth_change, bool /*is_loop_target*/) {
             auto& elem = _br_tab[_i++];
             elem.stack_pop = depth_change;
             return &elem.pc;
          }
          // Must be called after all cases
-         uint32_t* emit_default(uint32_t depth_change) {
-            auto result = emit_case(depth_change);
+         uint32_t* emit_default(uint32_t depth_change, bool is_loop_target) {
+            auto result = emit_case(depth_change, is_loop_target);
             SYS_VM_ASSERT(_this->fb[_this->op_index].is_a<error_t>(), wasm_parse_exception, "overwrote br_table data");
             return result;
          }

@@ -7,11 +7,20 @@
 #include <sysio/vm/utils.hpp>
 
 #include <atomic>
+#include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <setjmp.h>
 #include <signal.h>
 #include <utility>
+
+// OSX requires _XOPEN_SOURCE to #include <ucontext.h>
+#ifdef __APPLE__
+#   ifndef _XOPEN_SOURCE
+#      define _XOPEN_SOURCE 700
+#   endif
+#endif
+#include <ucontext.h>
 
 namespace sysio { namespace vm {
 
@@ -44,6 +53,32 @@ namespace sysio { namespace vm {
          }
       }
       return timed_run_has_timed_out.load(std::memory_order_acquire);
+   }
+
+   /// Returns the interrupted instruction pointer from a signal context when the platform exposes it.
+   inline const void* signal_instruction_pointer(void* uap) {
+      auto* const context = static_cast<ucontext_t*>(uap);
+      if (!context)
+         return nullptr;
+#if defined(__APPLE__) && defined(__aarch64__)
+      return reinterpret_cast<const void*>(context->uc_mcontext->__ss.__pc);
+#elif defined(__APPLE__) && defined(__x86_64__)
+      return reinterpret_cast<const void*>(context->uc_mcontext->__ss.__rip);
+#elif defined(__FreeBSD__) && defined(__x86_64__)
+      return reinterpret_cast<const void*>(context->uc_mcontext.mc_rip);
+#elif defined(__linux__) && defined(__x86_64__)
+      return reinterpret_cast<const void*>(context->uc_mcontext.gregs[REG_RIP]);
+#else
+      return nullptr;
+#endif
+   }
+
+   /// Returns true when a program counter points into the generated-code range for the active VM frame.
+   inline bool pc_in_code_memory_range(const void* pc) {
+      const auto address = reinterpret_cast<std::uintptr_t>(pc);
+      const auto begin   = reinterpret_cast<std::uintptr_t>(code_memory_range.data());
+      const auto end     = begin + code_memory_range.size();
+      return !code_memory_range.empty() && address >= begin && address < end;
    }
 
    /// Chains a signal to the handler that was installed before sys-vm registered its signal handler.
@@ -79,7 +114,7 @@ namespace sysio { namespace vm {
    }
 
    /// Returns true when an active VM signal frame handled the signal or false when it must be chained.
-   inline bool handle_active_vm_signal(int sig, siginfo_t* info, sigjmp_buf* dest) {
+   inline bool handle_active_vm_signal(int sig, siginfo_t* info, void* uap, sigjmp_buf* dest) {
       const void* addr = info->si_addr;
 
       // neither range set means legacy catch-all behavior; useful for some of the old tests
@@ -96,6 +131,14 @@ namespace sysio { namespace vm {
       if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out) {
          return false;
       }
+      if (execution_timed_out && active_timed_run_has_timed_out && !code_memory_range.empty() &&
+          !pc_in_code_memory_range(signal_instruction_pointer(uap))) {
+         // A directed AArch64 timeout signal can arrive while generated code is executing a host function.
+         // Jumping across that host/libc frame is undefined and corrupts process state.  The safe behavior is to
+         // consume this signal and let host code return to a cooperative check or a later VM interrupt point; making
+         // the watchdog repeatedly re-signal from here is not async-signal-safe and does not fit this handler.
+         return true;
+      }
       // otherwise, jump out
       siglongjmp(*dest, sig);
       return true;
@@ -105,7 +148,7 @@ namespace sysio { namespace vm {
       sigjmp_buf* dest = std::atomic_load(&signal_dest);
 
       if (dest) {
-         if (!handle_active_vm_signal(sig, info, dest)) {
+         if (!handle_active_vm_signal(sig, info, uap, dest)) {
             chain_previous_signal_handler(sig, info, uap);
             return;
          }

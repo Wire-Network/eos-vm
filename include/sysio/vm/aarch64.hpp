@@ -69,7 +69,7 @@ namespace sysio { namespace vm {
       label_t emit_end() { return _code; }
 
       /// Emits a function return branch.
-      branch_t emit_return(uint32_t depth_change) { return emit_br(depth_change); }
+      branch_t emit_return(uint32_t depth_change, bool is_loop_target) { return emit_br(depth_change, is_loop_target); }
 
       /// Emits no code for a block label.
       void emit_block() {}
@@ -91,13 +91,15 @@ namespace sysio { namespace vm {
       }
 
       /// Emits an unconditional structured branch.
-      branch_t emit_br(uint32_t depth_change) {
+      branch_t emit_br(uint32_t depth_change, bool is_loop_target = false) {
+         emit_timeout_check();
          drop_branch_values(depth_change);
          return emit_b_placeholder();
       }
 
       /// Emits a conditional structured branch.
-      branch_t emit_br_if(uint32_t depth_change) {
+      branch_t emit_br_if(uint32_t depth_change, bool is_loop_target) {
+         emit_timeout_check();
          pop_x(scratch0);
          if (depth_change == 0u || depth_change == 0x80000001u) {
             return emit_cbnz_placeholder(scratch0);
@@ -113,7 +115,8 @@ namespace sysio { namespace vm {
       /// Emits a linear br_table dispatcher for the AArch64 backend.
       struct br_table_parser {
          /// Emits one br_table case branch.
-         branch_t emit_case(uint32_t depth_change) {
+         branch_t emit_case(uint32_t depth_change, bool is_loop_target) {
+            _this->emit_timeout_check();
             _this->emit_mov_w_imm(_case_index, scratch1);
             _this->emit_cmp_w_reg(scratch0, scratch1);
             auto skip = _this->emit_b_cond_placeholder(condition_ne);
@@ -125,7 +128,8 @@ namespace sysio { namespace vm {
          }
 
          /// Emits the br_table default branch.
-         branch_t emit_default(uint32_t depth_change) {
+         branch_t emit_default(uint32_t depth_change, bool is_loop_target) {
+            _this->emit_timeout_check();
             _this->drop_branch_values(depth_change);
             return _this->emit_b_placeholder();
          }
@@ -1290,6 +1294,21 @@ namespace sysio { namespace vm {
       /// Raises the WASM unreachable trap without unwinding through the generated frame.
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
 
+      /// Raises a timeout through the VM signal frame when the current timed_run has expired.
+      static void check_timeout() {
+         static constexpr uint32_t timeout_poll_interval  = 65536;
+         thread_local uint32_t     timeout_poll_countdown = timeout_poll_interval;
+
+         if (--timeout_poll_countdown != 0) {
+            return;
+         }
+         timeout_poll_countdown = timeout_poll_interval;
+
+         if (execution_has_timed_out()) {
+            vm::throw_<timeout_exception>("execution timed out");
+         }
+      }
+
       /// Produces a readable failure when a float opcode is reached without softfloat support.
       [[noreturn]] static void softfloat_disabled(const char* opcode) { throw wasm_parse_exception{ opcode }; }
 
@@ -1690,6 +1709,9 @@ namespace sysio { namespace vm {
          emit_mov_x_imm(reinterpret_cast<uint64_t>(helper), scratch3);
          emit_blr(scratch3);
       }
+
+      /// Emits a sampled timeout poll before generated control flow can continue branching.
+      void emit_timeout_check() { emit_call_helper(&check_timeout); }
 
       /// Emits a placeholder unconditional B instruction.
       branch_t emit_b_placeholder() {

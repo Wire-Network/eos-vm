@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <sysio/vm/backend.hpp>
@@ -65,23 +66,6 @@ struct deferred_execution_thread_interrupt_watchdog {
 
    /// Returns true only after expiry; early sampling would incorrectly choose the cooperative timeout path.
    bool should_interrupt_execution_thread() const { return expired.load(std::memory_order_acquire); }
-};
-
-struct initially_interrupting_watchdog {
-   std::atomic<bool> expired{ false };
-
-   /// Mutates policy after setup; timed_run should use the pre-captured interruption decision.
-   template <typename F>
-   callback_thread_guard scoped_run(F&& callback) {
-      return callback_thread_guard{ std::thread{ [this, callback = std::forward<F>(callback)]() mutable {
-         std::this_thread::sleep_for(std::chrono::milliseconds(10));
-         expired.store(true, std::memory_order_release);
-         callback();
-      } } };
-   }
-
-   /// Starts interrupting and then flips false after expiry to catch accidental watchdog reads on the callback thread.
-   bool should_interrupt_execution_thread() const { return !expired.load(std::memory_order_acquire); }
 };
 
 struct late_execution_thread_interrupt_watchdog {
@@ -171,14 +155,62 @@ TEST_CASE("AArch64 JIT watchdog interrupt signals the execution thread", "[watch
                    sysio::vm::timeout_exception);
 }
 
-TEST_CASE("AArch64 JIT watchdog captures interrupt policy before callback setup",
+TEST_CASE("AArch64 JIT watchdog samples interrupt policy when the callback fires",
           "[watchdog_interrupt][jit][aarch64]") {
    using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
    auto      code  = make_infinite_loop_wasm_module();
    backend_t bkend(code, &wa);
 
-   CHECK_THROWS_AS(bkend.timed_run(initially_interrupting_watchdog{}, [&]() { bkend.call("env", "loop"); }),
-                   sysio::vm::timeout_exception);
+   CHECK_THROWS_AS(
+         bkend.timed_run(deferred_execution_thread_interrupt_watchdog{}, [&]() { bkend.call("env", "loop"); }),
+         sysio::vm::timeout_exception);
+}
+
+TEST_CASE("AArch64 JIT watchdog interrupts concurrent shared-code executions", "[watchdog_interrupt][jit][aarch64]") {
+   using backend_t = sysio::vm::backend<std::nullptr_t, sysio::vm::jit>;
+   using context_t = sysio::vm::jit::context<std::nullptr_t>;
+
+   static constexpr uint32_t worker_count = 8;
+   auto                      code         = make_infinite_loop_wasm_module();
+   sysio::vm::wasm_code_ptr  code_ptr{ code.data(), code.size() };
+   backend_t                 compiled{ code_ptr, code.size(), &wa, {}, true, false };
+
+   std::atomic<uint32_t>                 ready{ 0 };
+   std::atomic<uint32_t>                 timeout_count{ 0 };
+   std::atomic<uint32_t>                 unexpected_exception_count{ 0 };
+   std::atomic<bool>                     start{ false };
+   std::array<std::thread, worker_count> workers;
+
+   for (auto& worker : workers) {
+      worker = std::thread{ [&]() {
+         backend_t runner;
+         context_t context;
+
+         runner.share(compiled);
+         context.set_module(&compiled.get_module());
+         runner.set_context(&context);
+         runner.reset_max_call_depth();
+         runner.reset_max_pages();
+         runner.set_wasm_allocator(&wa);
+         runner.initialize();
+
+         ready.fetch_add(1, std::memory_order_acq_rel);
+         while (!start.load(std::memory_order_acquire)) { std::this_thread::yield(); }
+
+         try {
+            runner.timed_run(deferred_execution_thread_interrupt_watchdog{}, [&]() { runner.call("env", "loop"); });
+         } catch (const sysio::vm::timeout_exception&) {
+            timeout_count.fetch_add(1, std::memory_order_acq_rel);
+         } catch (...) { unexpected_exception_count.fetch_add(1, std::memory_order_acq_rel); }
+      } };
+   }
+
+   while (ready.load(std::memory_order_acquire) != worker_count) { std::this_thread::yield(); }
+   start.store(true, std::memory_order_release);
+   for (auto& worker : workers) { worker.join(); }
+
+   CHECK(timeout_count.load(std::memory_order_acquire) == worker_count);
+   CHECK(unexpected_exception_count.load(std::memory_order_acquire) == 0);
 }
 
 TEST_CASE("AArch64 interpreter watchdog interrupts infinite loop", "[watchdog_interrupt][interpreter][aarch64]") {
