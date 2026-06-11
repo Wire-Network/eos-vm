@@ -112,37 +112,60 @@ namespace sysio { namespace vm {
          return result;
       }
 
-      /// Emits a linear br_table dispatcher for the AArch64 backend.
+      /// Emits a jump-table dispatcher for the AArch64 backend.
       struct br_table_parser {
          /// Emits one br_table case branch.
          branch_t emit_case(uint32_t depth_change, bool is_loop_target) {
-            _this->emit_timeout_check();
-            _this->emit_mov_w_imm(_case_index, scratch1);
-            _this->emit_cmp_w_reg(scratch0, scratch1);
-            auto skip = _this->emit_b_cond_placeholder(condition_ne);
-            _this->drop_branch_values(depth_change);
-            auto result = _this->emit_b_placeholder();
-            _this->fix_branch(skip, _this->_code);
+            (void)is_loop_target;
+            SYS_VM_ASSERT(_case_index < _table_entries.size(), wasm_parse_exception,
+                          "AArch64 JIT br_table case index out of range");
+            _writer->fix_branch(_table_entries[_case_index], _writer->_code);
+            _writer->drop_branch_values(depth_change);
+            auto result = _writer->emit_b_placeholder();
             ++_case_index;
             return result;
          }
 
          /// Emits the br_table default branch.
          branch_t emit_default(uint32_t depth_change, bool is_loop_target) {
-            _this->emit_timeout_check();
-            _this->drop_branch_values(depth_change);
-            return _this->emit_b_placeholder();
+            (void)is_loop_target;
+            if (_default_branch.address) {
+               _writer->fix_branch(_default_branch, _writer->_code);
+            }
+            _writer->drop_branch_values(depth_change);
+            return _writer->emit_b_placeholder();
          }
 
-         aarch64_machine_code_writer* _this       = nullptr;
+         aarch64_machine_code_writer* _writer = nullptr;
+         std::vector<branch_t>        _table_entries;
+         branch_t                     _default_branch;
          uint32_t                     _case_index = 0;
       };
 
       /// Emits a br_table selector pop and returns the case parser.
-      br_table_parser emit_br_table(uint32_t /*table_size*/) {
-         // TODO: Replace linear br_table dispatch with a jump-table lowering when code-size and range handling allow.
+      br_table_parser emit_br_table(uint32_t table_size) {
+         emit_timeout_check();
          pop_x(scratch0);
-         return { this, 0 };
+         br_table_parser result{ this };
+         if (table_size == 0) {
+            return result;
+         }
+
+         emit_mov_w_imm(table_size, scratch1);
+         emit_cmp_w_reg(scratch0, scratch1);
+         result._default_branch = emit_b_cond_placeholder(condition_hs);
+
+         void* table_address = emit_adr_placeholder(scratch1);
+         emit_zero_extend_w(scratch0);
+         emit_add_reg(scratch0, scratch0, scratch0);
+         emit_add_reg(scratch0, scratch0, scratch0);
+         emit_add_reg(scratch1, scratch1, scratch0);
+         emit_br_reg(scratch1);
+
+         fix_adr(table_address, _code);
+         result._table_entries.reserve(table_size);
+         for (uint32_t i = 0; i < table_size; ++i) { result._table_entries.push_back(emit_b_placeholder()); }
+         return result;
       }
 
       /// Emits a direct internal function call.
@@ -951,6 +974,14 @@ namespace sysio { namespace vm {
 #endif
       }
 
+      /// Returns the execution-context byte offset for the JIT call-depth counter.
+      static constexpr uint32_t remaining_call_depth_offset() {
+         constexpr std::size_t offset = Context::remaining_call_depth_offset();
+         static_assert((offset % 4) == 0, "AArch64 JIT call-depth counter must be 4-byte aligned");
+         static_assert(offset <= 4095 * 4, "AArch64 JIT call-depth counter must fit unsigned W load/store offset");
+         return static_cast<uint32_t>(offset);
+      }
+
       /// Emits a raw little-endian AArch64 instruction.
       void emit_u32(uint32_t instruction) {
          ensure_code_capacity(sizeof(instruction));
@@ -985,6 +1016,18 @@ namespace sysio { namespace vm {
       void emit_add_imm(uint32_t dst, uint32_t src, uint32_t byte_count) {
          SYS_VM_ASSERT(byte_count <= 4095, wasm_parse_exception, "AArch64 JIT immediate offset is too large");
          emit_u32(0x91000000u | (byte_count << 10) | (src << 5) | dst);
+      }
+
+      /// Emits a 32-bit ADD immediate instruction.
+      void emit_add_w_imm(uint32_t dst, uint32_t src, uint32_t value) {
+         SYS_VM_ASSERT(value <= 4095, wasm_parse_exception, "AArch64 JIT immediate value is too large");
+         emit_u32(0x11000000u | (value << 10) | (src << 5) | dst);
+      }
+
+      /// Emits a 32-bit SUBS immediate instruction.
+      void emit_subs_w_imm(uint32_t dst, uint32_t src, uint32_t value) {
+         SYS_VM_ASSERT(value <= 4095, wasm_parse_exception, "AArch64 JIT immediate value is too large");
+         emit_u32(0x71000000u | (value << 10) | (src << 5) | dst);
       }
 
       /// Emits an add-to-stack-pointer operation, splitting large adjustments into valid aligned chunks.
@@ -1243,16 +1286,6 @@ namespace sysio { namespace vm {
          return result;
       }
 
-      /// Reserves one execution-context call-depth slot for generated calls.
-      static void enter_call(Context* context) {
-         vm::longjmp_on_exception([&]() { context->enter_jit_call(); });
-      }
-
-      /// Releases one execution-context call-depth slot without unwinding through generated code.
-      static void exit_call(Context* context) {
-         vm::longjmp_on_exception([&]() { context->exit_jit_call(); });
-      }
-
       /// Returns the current linear-memory page count through the execution context.
       static int32_t current_memory(Context* context) { return context->current_linear_memory(); }
 
@@ -1293,6 +1326,11 @@ namespace sysio { namespace vm {
 
       /// Raises the WASM unreachable trap without unwinding through the generated frame.
       static void on_unreachable() { vm::throw_<wasm_interpreter_exception>("unreachable"); }
+
+      /// Raises the generated-call depth trap without returning through generated code.
+      [[noreturn]] static void on_call_depth_exceeded() {
+         vm::throw_<wasm_interpreter_exception>("call depth exceeded");
+      }
 
       /// Raises a timeout through the VM signal frame when the current timed_run has expired.
       static void check_timeout() {
@@ -1703,6 +1741,9 @@ namespace sysio { namespace vm {
       /// Emits an indirect branch-and-link through an X register.
       void emit_blr(uint32_t reg) { emit_u32(0xd63f0000u | (reg << 5)); }
 
+      /// Emits an indirect branch through an X register.
+      void emit_br_reg(uint32_t reg) { emit_u32(0xd61f0000u | (reg << 5)); }
+
       /// Emits an indirect C ABI helper call through a materialized absolute function address.
       template <typename Function>
       void emit_call_helper(Function helper) {
@@ -1718,6 +1759,13 @@ namespace sysio { namespace vm {
          void* branch = _code;
          emit_u32(0x14000000u);
          return { branch, branch_kind::b, 0 };
+      }
+
+      /// Emits a placeholder ADR instruction and returns its address for later relocation.
+      void* emit_adr_placeholder(uint32_t reg) {
+         void* instruction = _code;
+         emit_u32(0x10000000u | reg);
+         return instruction;
       }
 
       /// Emits a placeholder conditional B.cond instruction.
@@ -1739,6 +1787,24 @@ namespace sysio { namespace vm {
          void* branch = _code;
          emit_u32(0x35000000u | reg);
          return { branch, branch_kind::cbnz, reg };
+      }
+
+      /// Resolves an AArch64 ADR relocation.
+      static void fix_adr(void* instruction, void* target) {
+         const auto* instruction_addr = static_cast<const unsigned char*>(instruction);
+         const auto* target_addr      = static_cast<const unsigned char*>(target);
+         const auto  relative         = target_addr - instruction_addr;
+         SYS_VM_ASSERT(relative >= -(1 << 20) && relative < (1 << 20), wasm_parse_exception,
+                       "AArch64 JIT ADR target is out of range");
+
+         uint32_t existing = 0;
+         std::memcpy(&existing, instruction, sizeof(existing));
+         const uint32_t reg         = existing & 0x1fu;
+         const uint32_t encoded_imm = static_cast<uint32_t>(relative);
+         const uint32_t immlo       = encoded_imm & 0x3u;
+         const uint32_t immhi       = (encoded_imm >> 2) & 0x7ffffu;
+         const uint32_t patched     = 0x10000000u | (immlo << 29) | (immhi << 5) | reg;
+         std::memcpy(instruction, &patched, sizeof(patched));
       }
 
       /// Resolves an AArch64 unconditional B relocation.
@@ -2018,16 +2084,23 @@ namespace sysio { namespace vm {
 
       /// Emits a call-depth reservation before a generated direct or indirect call.
       void emit_enter_call() {
-         // TODO: Consider inlining AArch64 call-depth tracking to avoid C-call overhead on every generated call.
          load_context();
-         emit_call_helper(&enter_call);
-         load_context();
+         emit_ldr_w_unsigned(scratch0, return_reg, remaining_call_depth_offset());
+         emit_subs_w_imm(scratch0, scratch0, 1);
+         auto exhausted_depth = emit_b_cond_placeholder(condition_ls);
+         emit_str_w_unsigned(scratch0, return_reg, remaining_call_depth_offset());
+         auto done = emit_b_placeholder();
+         fix_branch(exhausted_depth, _code);
+         emit_call_helper(&on_call_depth_exceeded);
+         fix_branch(done, _code);
       }
 
       /// Emits a call-depth release after a generated direct or indirect call.
       void emit_exit_call() {
          load_context();
-         emit_call_helper(&exit_call);
+         emit_ldr_w_unsigned(scratch0, return_reg, remaining_call_depth_offset());
+         emit_add_w_imm(scratch0, scratch0, 1);
+         emit_str_w_unsigned(scratch0, return_reg, remaining_call_depth_offset());
       }
 
       /// Emits rotate-left through AArch64's rotate-right instruction and a negated shift count.

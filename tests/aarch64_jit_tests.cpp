@@ -31,6 +31,21 @@ void append_u32_leb(std::vector<uint8_t>& bytes, uint32_t value) {
    } while (value != 0);
 }
 
+/// Appends a signed i32 LEB128 value for generated i32.const instruction immediates.
+void append_i32_leb(std::vector<uint8_t>& bytes, int32_t value) {
+   bool more = true;
+   while (more) {
+      uint8_t byte = static_cast<uint8_t>(value) & UINT8_C(0x7f);
+      value >>= 7;
+      const bool sign_bit = (byte & UINT8_C(0x40)) != 0;
+      more                = !((value == 0 && !sign_bit) || (value == -1 && sign_bit));
+      if (more) {
+         byte |= UINT8_C(0x80);
+      }
+      bytes.push_back(byte);
+   }
+}
+
 /// Appends a complete WASM section with a generated LEB128 payload length.
 void append_wasm_section(std::vector<uint8_t>& module, uint8_t section_id, const std::vector<uint8_t>& payload) {
    module.push_back(section_id);
@@ -235,6 +250,78 @@ std::vector<uint8_t> make_aarch64_wide_imported_call_wasm() {
    append_u32_leb(code_section, 1);
    append_u32_leb(code_section, static_cast<uint32_t>(run_body.size()));
    code_section.insert(code_section.end(), run_body.begin(), run_body.end());
+   append_wasm_section(module, section_code, code_section);
+
+   return module;
+}
+
+/// Builds a module whose br_table targets require different operand-stack drop counts.
+std::vector<uint8_t> make_aarch64_mixed_br_table_drop_wasm() {
+   constexpr uint8_t section_type     = 1;
+   constexpr uint8_t section_function = 3;
+   constexpr uint8_t section_export   = 7;
+   constexpr uint8_t section_code     = 10;
+   constexpr uint8_t wasm_i32         = 0x7f;
+
+   std::vector<uint8_t> module = { 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 };
+
+   std::vector<uint8_t> type_section;
+   append_u32_leb(type_section, 1);
+   type_section.push_back(0x60);
+   append_u32_leb(type_section, 1);
+   type_section.push_back(wasm_i32);
+   append_u32_leb(type_section, 1);
+   type_section.push_back(wasm_i32);
+   append_wasm_section(module, section_type, type_section);
+
+   std::vector<uint8_t> function_section;
+   append_u32_leb(function_section, 1);
+   append_u32_leb(function_section, 0);
+   append_wasm_section(module, section_function, function_section);
+
+   std::vector<uint8_t>       export_section;
+   const std::vector<uint8_t> export_name = { 'p', 'i', 'c', 'k' };
+   append_u32_leb(export_section, 1);
+   append_u32_leb(export_section, static_cast<uint32_t>(export_name.size()));
+   export_section.insert(export_section.end(), export_name.begin(), export_name.end());
+   export_section.push_back(0);
+   append_u32_leb(export_section, 0);
+   append_wasm_section(module, section_export, export_section);
+
+   std::vector<uint8_t> body;
+   append_u32_leb(body, 0);
+   body.push_back(0x02);
+   body.push_back(wasm_i32);
+   body.push_back(0x41);
+   append_i32_leb(body, 100);
+   body.push_back(0x02);
+   body.push_back(wasm_i32);
+   body.push_back(0x41);
+   append_i32_leb(body, 10);
+   body.push_back(0x02);
+   body.push_back(wasm_i32);
+   body.push_back(0x41);
+   append_i32_leb(body, 1);
+   body.push_back(0x20);
+   append_u32_leb(body, 0);
+   body.push_back(0x0e);
+   append_u32_leb(body, 2);
+   append_u32_leb(body, 0);
+   append_u32_leb(body, 1);
+   append_u32_leb(body, 2);
+   body.push_back(0x0b);
+   body.push_back(0x6a);
+   body.push_back(0x0c);
+   append_u32_leb(body, 1);
+   body.push_back(0x0b);
+   body.push_back(0x6a);
+   body.push_back(0x0b);
+   body.push_back(0x0b);
+
+   std::vector<uint8_t> code_section;
+   append_u32_leb(code_section, 1);
+   append_u32_leb(code_section, static_cast<uint32_t>(body.size()));
+   code_section.insert(code_section.end(), body.begin(), body.end());
    append_wasm_section(module, section_code, code_section);
 
    return module;
@@ -912,6 +999,23 @@ TEST_CASE("AArch64 JIT executes br_table control flow", "[jit][aarch64]") {
    auto fallback = bkend.call_with_return("env", "pick", UINT32_C(9));
    REQUIRE(fallback);
    CHECK(fallback->to_ui32() == 0u);
+}
+
+TEST_CASE("AArch64 JIT executes br_table cases with mixed stack drops", "[jit][aarch64]") {
+   using backend_t = backend<std::nullptr_t, jit>;
+   backend_t bkend(make_aarch64_mixed_br_table_drop_wasm(), &wa);
+
+   auto first = bkend.call_with_return("env", "pick", UINT32_C(0));
+   REQUIRE(first);
+   CHECK(first->to_ui32() == 11u);
+
+   auto second = bkend.call_with_return("env", "pick", UINT32_C(1));
+   REQUIRE(second);
+   CHECK(second->to_ui32() == 101u);
+
+   auto fallback = bkend.call_with_return("env", "pick", UINT32_C(9));
+   REQUIRE(fallback);
+   CHECK(fallback->to_ui32() == 1u);
 }
 
 TEST_CASE("AArch64 JIT executes mutable integer globals", "[jit][aarch64]") {

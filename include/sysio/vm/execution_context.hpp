@@ -289,6 +289,23 @@ namespace sysio { namespace vm {
       /// Releases one JIT call-depth slot after a generated function returns from another function.
       void exit_jit_call() { ++_remaining_call_depth; }
 
+      /// Returns the byte offset used by JIT backends that update call depth inline.
+#if defined(__clang__)
+#   pragma clang diagnostic push
+#   pragma clang diagnostic ignored "-Winvalid-offsetof"
+#elif defined(__GNUC__)
+#   pragma GCC diagnostic push
+#   pragma GCC diagnostic ignored "-Winvalid-offsetof"
+#endif
+      static constexpr std::size_t remaining_call_depth_offset() {
+         return offsetof(jit_execution_context, _remaining_call_depth);
+      }
+#if defined(__clang__)
+#   pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#   pragma GCC diagnostic pop
+#endif
+
       inline native_value call_host_function(native_value* stack, uint32_t index) {
          const auto& ft         = _mod->jit_mod->get_function_type(index);
          uint32_t    num_params = ft.param_types.size();
