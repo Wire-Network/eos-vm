@@ -1,6 +1,8 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <sysio/vm/backend.hpp>
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/watchdog.hpp>
@@ -126,13 +128,22 @@ std::vector<uint8_t> make_unreachable_wasm_module() {
 } // namespace
 
 TEST_CASE("watchdog interrupt", "[watchdog_interrupt]") {
-   std::atomic<bool> okay = false;
-   watchdog          w{ std::chrono::milliseconds(50) };
+   std::mutex              mutex;
+   std::condition_variable callback_fired;
+   bool                    okay = false;
+   watchdog                w{ std::chrono::milliseconds(50) };
    {
-      auto g = w.scoped_run([&]() { okay = true; });
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      auto g = w.scoped_run([&]() {
+         {
+            std::lock_guard lock{ mutex };
+            okay = true;
+         }
+         callback_fired.notify_one();
+      });
+
+      std::unique_lock lock{ mutex };
+      CHECK(callback_fired.wait_for(lock, std::chrono::seconds(5), [&]() { return okay; }));
    }
-   CHECK(okay);
 }
 
 TEST_CASE("watchdog no interrupt", "[watchdog_no_interrupt]") {
