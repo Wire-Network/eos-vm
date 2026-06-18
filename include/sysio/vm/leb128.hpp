@@ -37,7 +37,7 @@ namespace sysio { namespace vm {
          inline constexpr void from(uint32_t v) {
              bytes_used = 0;
 
-#if defined(__clang__)
+#ifdef __clang__
 #pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
@@ -83,7 +83,7 @@ namespace sysio { namespace vm {
          inline constexpr uint32_t to() {
             uint32_t ret = 0;
 
-#if defined(__clang__)
+#ifdef __clang__
 #pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
@@ -180,7 +180,7 @@ namespace sysio { namespace vm {
          inline constexpr void _from(T v) {
             bytes_used = 0;
 
-#if defined(__clang__)
+#ifdef __clang__
 #pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
@@ -199,7 +199,7 @@ namespace sysio { namespace vm {
          inline constexpr T _to() {
             typename std::make_unsigned<T>::type ret = 0;
 
-#if defined(__clang__)
+#ifdef __clang__
 #pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
