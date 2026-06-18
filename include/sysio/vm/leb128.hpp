@@ -38,7 +38,7 @@ namespace sysio { namespace vm {
              bytes_used = 0;
 
 #ifdef __clang__
-#pragma unroll
+#pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
 #endif
@@ -84,7 +84,7 @@ namespace sysio { namespace vm {
             uint32_t ret = 0;
 
 #ifdef __clang__
-#pragma unroll
+#pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
 #endif
@@ -181,7 +181,7 @@ namespace sysio { namespace vm {
             bytes_used = 0;
 
 #ifdef __clang__
-#pragma unroll
+#pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
 #endif
@@ -200,7 +200,7 @@ namespace sysio { namespace vm {
             typename std::make_unsigned<T>::type ret = 0;
 
 #ifdef __clang__
-#pragma unroll
+#pragma clang loop unroll_count(5)
 #elif defined(__GNUC__)
 #pragma GCC unroll 5
 #endif
