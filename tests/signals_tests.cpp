@@ -134,17 +134,31 @@ namespace {
       }
    };
 
-   // Build a SIGSEGV siginfo/ucontext whose fault address (and, on x86_64 Linux, the
-   // interrupted instruction pointer) is `addr` — the instruction-fetch signature of a
-   // revoked-code-page fault, where the kernel reports si_addr == RIP.
-   void make_instruction_fetch_fault(siginfo_t& info, ucontext_t& uctx, void* addr) {
-      info = siginfo_t{};
-      info.si_signo = SIGSEGV;
-      info.si_code  = SEGV_ACCERR;
-      info.si_addr  = addr;
-      uctx = ucontext_t{};
-#if defined(__linux__) && defined(__x86_64__)
-      uctx.uc_mcontext.gregs[REG_RIP] = reinterpret_cast<greg_t>(addr);
+   // A synthetic SIGSEGV: siginfo plus a ucontext whose interrupted instruction pointer equals the
+   // fault address, as the kernel reports an instruction fetch. Darwin's ucontext_t only points at
+   // its machine context, so that struct is carried here to keep the pointer valid.
+   struct fault_context {
+      siginfo_t  info{};
+      ucontext_t uctx{};
+#if defined(__APPLE__)
+      _STRUCT_MCONTEXT mcontext{};
+#endif
+   };
+
+   void make_instruction_fetch_fault(fault_context& fault, void* addr) {
+      fault.info.si_signo = SIGSEGV;
+      fault.info.si_code  = SEGV_ACCERR;
+      fault.info.si_addr  = addr;
+#if defined(__APPLE__)
+      fault.uctx.uc_mcontext = &fault.mcontext;
+      fault.uctx.uc_mcsize   = sizeof(fault.mcontext);
+#   if defined(__aarch64__)
+      fault.mcontext.__ss.__pc = reinterpret_cast<decltype(fault.mcontext.__ss.__pc)>(addr);
+#   elif defined(__x86_64__)
+      fault.mcontext.__ss.__rip = reinterpret_cast<decltype(fault.mcontext.__ss.__rip)>(addr);
+#   endif
+#elif defined(__linux__) && defined(__x86_64__)
+      fault.uctx.uc_mcontext.gregs[REG_RIP] = reinterpret_cast<greg_t>(addr);
 #endif
    }
 }
@@ -160,14 +174,13 @@ TEST_CASE("A fault in the shared code arena jumps out even when timed_run_has_ti
    sysio::vm::timed_run_has_timed_out.store(false, std::memory_order_release);
    sysio::vm::active_timed_run_has_timed_out = nullptr;
 
-   siginfo_t info;
-   ucontext_t uctx;
-   make_instruction_fetch_fault(info, uctx, regression_code_arena + 0x40); // inside the arena
+   fault_context fault;
+   make_instruction_fetch_fault(fault, regression_code_arena + 0x40); // inside the arena
 
    bool jumped_out = false;
    sigjmp_buf dest;
    if (sigsetjmp(dest, 1) == 0) {
-      sysio::vm::handle_active_vm_signal(SIGSEGV, &info, &uctx, &dest);
+      sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest);
       FAIL("handle_active_vm_signal returned instead of jumping out of the revoked code arena");
    } else {
       jumped_out = true;
@@ -186,15 +199,14 @@ TEST_CASE("A fault outside every VM range is still declined (chained) when not t
    sysio::vm::active_timed_run_has_timed_out = nullptr;
 
    // A fault well away from both the code arena and (empty) memory range.
-   int unrelated_stack_object = 0;
-   siginfo_t info;
-   ucontext_t uctx;
-   make_instruction_fetch_fault(info, uctx, &unrelated_stack_object);
+   int           unrelated_stack_object = 0;
+   fault_context fault;
+   make_instruction_fetch_fault(fault, &unrelated_stack_object);
 
    sigjmp_buf dest;
    // Not timed out and not in any VM range: the handler must return false so the signal
    // chains to the previous handler, rather than being swallowed.
-   CHECK(sysio::vm::handle_active_vm_signal(SIGSEGV, &info, &uctx, &dest) == false);
+   CHECK(sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest) == false);
 }
 
 // A VM longjmp recovery must not change any other thread's signal mask. On macOS siglongjmp
