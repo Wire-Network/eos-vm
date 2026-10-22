@@ -2,9 +2,12 @@
 #include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <future>
 #include <span>
 #include <thread>
 #include <iostream>
+#include <poll.h>
+#include <unistd.h>
 
 #include <catch2/catch.hpp>
 
@@ -202,4 +205,80 @@ TEST_CASE("A fault outside every VM range is still declined (chained) when not t
    // Not timed out and not in any VM range: the handler must return false so the signal
    // chains to the previous handler, rather than being swallowed.
    CHECK(sysio::vm::handle_active_vm_signal(SIGSEGV, &info, &uctx, &dest) == false);
+}
+
+// A VM longjmp recovery must not change any other thread's signal mask. On macOS siglongjmp
+// restored the mask with the process-wide sigprocmask, so after a recovery SIGTERM stayed
+// blocked everywhere and could not reach the thread meant to handle it.
+// Backport of gofractally/eos-vm#23.
+static int signal_pipefds[2];
+static void signal_write_pipe(int) {
+   [[maybe_unused]] auto written = write(signal_pipefds[1], "", 1);
+}
+
+TEST_CASE("Test signal mask longjmp restoration", "[signal_mask_longjmp_restoration]") {
+   REQUIRE(pipe(signal_pipefds) == 0);
+   auto pipe_guard = sysio::vm::scope_guard{[&]{
+      close(signal_pipefds[0]);
+      close(signal_pipefds[1]);
+   }};
+
+   struct sigaction sa, old_sa;
+   sa.sa_handler = signal_write_pipe;
+   sigemptyset(&sa.sa_mask);
+   sa.sa_flags = 0;
+   REQUIRE(sigaction(SIGTERM, &sa, &old_sa) == 0);
+   auto restore_orig_sigterm_guard = sysio::vm::scope_guard{[&]{
+      sigaction(SIGTERM, &old_sa, nullptr);
+   }};
+
+   std::promise<void> thread_running;
+   std::promise<void> thread_may_return;
+   std::thread t([&] {
+      // block everything except SIGTERM in this thread
+      sigset_t suspend_mask;
+      sigfillset(&suspend_mask);
+      sigdelset(&suspend_mask, SIGTERM);
+      pthread_sigmask(SIG_SETMASK, &suspend_mask, nullptr);
+
+      thread_running.set_value();
+      thread_may_return.get_future().get();
+   });
+   auto thread_guard = sysio::vm::scope_guard{[&] {
+      thread_may_return.set_value();
+      t.join();
+   }};
+
+   thread_running.get_future().get();
+
+   sigset_t old_mask;
+   // block SIGTERM on this thread
+   sigset_t set;
+   sigemptyset(&set);
+   sigaddset(&set, SIGTERM);
+   REQUIRE(pthread_sigmask(SIG_BLOCK, &set, &old_mask) == 0);
+   auto mask_guard = sysio::vm::scope_guard{[&] {
+      pthread_sigmask(SIG_SETMASK, &old_mask, nullptr);
+   }};
+
+   sysio::vm::growable_allocator code_alloc;
+   sysio::vm::wasm_allocator wasm_alloc;
+   sysio::vm::invoke_with_signal_handler([&]() {
+      volatile auto i = *wasm_alloc.get_base_ptr<unsigned char>();
+      (void)i;
+   }, [](int){}, code_alloc, &wasm_alloc);
+
+   // send SIGTERM to the process; it should be delivered to the thread that leaves it unblocked
+   REQUIRE(kill(getpid(), SIGTERM) == 0);
+
+   pollfd pfd{
+      .fd = signal_pipefds[0],
+      .events = POLLIN,
+   };
+   int r = poll(&pfd, 1, 500);
+   REQUIRE(r == 1);
+   REQUIRE((pfd.revents & POLLIN) != 0);
+
+   char buf;
+   REQUIRE(read(signal_pipefds[0], &buf, 1) == 1);
 }
