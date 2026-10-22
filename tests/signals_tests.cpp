@@ -112,21 +112,11 @@ TEST_CASE("Test signal handler forwarding", "[signal_handler_forward]") {
    }
 }
 
-// Regression: read-only-trx shared-code SIGSEGV (wire-sysio CI run 39807473127).
-//
-// Read-only threads share one compiled module: one code arena, one process-wide
-// `timed_run_has_timed_out`. The x86_64 timeout mechanism revokes the shared code pages
-// (mprotect PROT_NONE); a thread executing them then faults on an instruction fetch into
-// its own `code_memory_range`. A PEER thread's timed_run exit guard can already have
-// cleared `timed_run_has_timed_out` to false before it re-enables those pages, so a
-// handler that classified the fault by that flag read "not timed out", returned false,
-// and chained to the previous (sys-vm-oc / default) handler — aborting the process.
-//
-// `handle_active_vm_signal` must instead classify by the faulting LOCATION: a fault whose
-// address or interrupted PC lies in this thread's code arena is always a VM fault and must
-// be jumped out of, regardless of the flag. These cases call the handler directly with a
-// synthetic siginfo/ucontext (no real VM execution), setting the thread-local ranges that
-// `invoke_with_signal_handler` would otherwise populate.
+// Regression for wire-sysio CI run 39807473127: a fault in this thread's code arena must be
+// jumped out of even when a peer thread has already cleared `timed_run_has_timed_out`;
+// gating on the flag chained it to the previous handler and aborted the process. These cases
+// call the handler directly with a synthetic siginfo/ucontext and the thread-local ranges
+// `invoke_with_signal_handler` would otherwise set.
 namespace {
    // A real, mapped buffer so the code-arena span points at valid memory. Page-aligned and
    // oversized to resemble a JIT code segment; its bytes are never executed by the test.

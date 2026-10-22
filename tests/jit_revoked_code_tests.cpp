@@ -1,17 +1,9 @@
-// Recovery from a fault on revoked JIT code pages, exercised through the real machinery.
-//
-// On x86_64 a timed_run that expires interrupts execution by revoking the module's code pages
-// (growable_allocator::disable_code, mprotect PROT_NONE); the thread executing them faults on
-// an instruction fetch inside its own code_memory_range and the signal handler jumps out of
-// the run. Read-only threads share one compiled module and the process-wide
-// timed_run_has_timed_out flag, and a peer's timed_run exit guard clears that flag before it
-// re-enables the pages. A run that enters the revoked code in that window therefore faults
-// with the flag already false. The handler must still recognise the fault as its own (by its
-// location) and unwind the run into an exception; classifying by the flag instead routed it to
-// the previous handler and ended the process (wire-sysio CI run 39807473127).
-//
-// These cases build that state directly instead of racing threads: compile a module, revoke
-// its code exactly as the watchdog does, clear the flag, then execute from a worker thread.
+// Recovery from a fault on revoked JIT code pages, through the real machinery. An expiring
+// timed_run revokes the shared module's code pages (disable_code, PROT_NONE), and a peer's
+// exit guard clears timed_run_has_timed_out before re-enabling them, so a run entering the
+// code in that window faults with the flag already false. The handler must still unwind the
+// run into an exception; gating on the flag ended the process (wire-sysio CI run 39807473127).
+// The state is built directly rather than raced: compile, revoke, clear the flag, execute.
 #include <sysio/vm/backend.hpp>
 #include <sysio/vm/config.hpp>
 #include <sysio/vm/exceptions.hpp>
