@@ -125,6 +125,30 @@ namespace sysio { namespace vm {
       if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
          siglongjmp(*dest, sig);
 
+      // A fault inside this thread's generated-code arena is always ours, regardless of the
+      // process-wide timed-out flag below. The x86_64 timeout mechanism revokes (mprotect
+      // PROT_NONE) the module's code pages to interrupt execution, so a thread executing them
+      // then faults on an instruction fetch whose address lies in code_memory_range. With
+      // read-only threads sharing one compiled module, a peer thread can already have cleared
+      // timed_run_has_timed_out in its timed_run exit guard before it re-enables those pages;
+      // classifying by the flag (below) would then read it as "not timed out", return false, and
+      // route this genuine VM fault to the previous (OC / default) handler, aborting the process.
+      // Classify by the faulting location instead and jump out cleanly, exactly as the
+      // memory-range case above does; the interrupted run unwinds to an exception and is retried.
+      // (pc_in_code_memory_range returns false when code_memory_range is empty, so the legacy
+      // catch-all handled at the top of this function is unaffected.)
+      //
+      // This matches on either the faulting address or the interrupted PC lying in the arena,
+      // which is a deliberate superset of the revoked-page instruction fetch (where the two are
+      // equal): it closes the crash without assuming every revoked-page access is an instruction
+      // fetch, and it still fires where the PC is unavailable (signal_instruction_pointer() null)
+      // via the si_addr term. The cost is that a genuine code-generation fault originating inside
+      // the arena becomes a recoverable exception rather than a hard crash — acceptable here,
+      // since a correct JIT produces no such fault and a live node must not abort on this window.
+      const void* const interrupted_pc = signal_instruction_pointer(uap);
+      if (pc_in_code_memory_range(addr) || (interrupted_pc && pc_in_code_memory_range(interrupted_pc)))
+         siglongjmp(*dest, sig);
+
       const bool execution_timed_out = execution_has_timed_out();
       // SEGV/BUS/ILL can come from a revoked code page or from the directed AArch64 interruption signal.
       // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
