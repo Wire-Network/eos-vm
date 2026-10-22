@@ -145,9 +145,9 @@ namespace {
 #endif
    };
 
-   void make_instruction_fetch_fault(fault_context& fault, void* addr) {
+   void make_instruction_fetch_fault(fault_context& fault, void* addr, int si_code = SEGV_ACCERR) {
       fault.info.si_signo = SIGSEGV;
-      fault.info.si_code  = SEGV_ACCERR;
+      fault.info.si_code  = si_code;
       fault.info.si_addr  = addr;
 #if defined(__APPLE__)
       fault.uctx.uc_mcontext = &fault.mcontext;
@@ -283,4 +283,48 @@ TEST_CASE("Test signal mask longjmp restoration", "[signal_mask_longjmp_restorat
 
    char buf;
    REQUIRE(read(signal_pipefds[0], &buf, 1) == 1);
+}
+
+// A SIGSEGV sent with kill() or pthread_kill() while generated code is executing is not a
+// fault at that PC: it keeps the previous handling (chained when no timeout is in force,
+// unwound through the timeout flag when one is).
+TEST_CASE("A signal sent with kill() while executing generated code is declined when not timed out",
+          "[handle_active_vm_signal_code_range]") {
+   vm_signal_state_guard guard;
+
+   sysio::vm::code_memory_range =
+      std::span<std::byte>{ regression_code_arena, sizeof(regression_code_arena) };
+   sysio::vm::memory_range = std::span<std::byte>{};
+   sysio::vm::timed_run_has_timed_out.store(false, std::memory_order_release);
+   sysio::vm::active_timed_run_has_timed_out = nullptr;
+
+   fault_context fault;
+   make_instruction_fetch_fault(fault, regression_code_arena + 0x40, SI_USER); // PC in the arena, but sent, not faulted
+
+   sigjmp_buf dest;
+   CHECK(sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest) == false);
+}
+
+TEST_CASE("A signal sent with kill() while a timeout is in force still unwinds the run",
+          "[handle_active_vm_signal_code_range]") {
+   vm_signal_state_guard guard;
+
+   sysio::vm::code_memory_range =
+      std::span<std::byte>{ regression_code_arena, sizeof(regression_code_arena) };
+   sysio::vm::memory_range = std::span<std::byte>{};
+   sysio::vm::timed_run_has_timed_out.store(true, std::memory_order_release);
+   sysio::vm::active_timed_run_has_timed_out = nullptr;
+
+   fault_context fault;
+   make_instruction_fetch_fault(fault, regression_code_arena + 0x40, SI_USER);
+
+   bool jumped_out = false;
+   sigjmp_buf dest;
+   if (sigsetjmp(dest, 1) == 0) {
+      sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest);
+      FAIL("handle_active_vm_signal returned instead of unwinding a run whose timeout is in force");
+   } else {
+      jumped_out = true;
+   }
+   CHECK(jumped_out);
 }

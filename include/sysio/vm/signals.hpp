@@ -73,6 +73,20 @@ namespace sysio { namespace vm {
 #endif
    }
 
+   /// Returns true when the signal was raised by the kernel for a fault at the interrupted
+   /// instruction, as opposed to one sent with kill(), pthread_kill() or sigqueue().
+   inline bool fault_is_synchronous(int sig, const siginfo_t* info) {
+      switch (sig) {
+         case SIGSEGV: return info->si_code == SEGV_MAPERR || info->si_code == SEGV_ACCERR;
+         case SIGBUS: return info->si_code == BUS_ADRALN || info->si_code == BUS_ADRERR || info->si_code == BUS_OBJERR;
+         case SIGILL:
+            return info->si_code == ILL_ILLOPC || info->si_code == ILL_ILLOPN || info->si_code == ILL_ILLADR ||
+                   info->si_code == ILL_ILLTRP || info->si_code == ILL_PRVOPC || info->si_code == ILL_PRVREG ||
+                   info->si_code == ILL_COPROC || info->si_code == ILL_BADSTK;
+         default: return false;
+      }
+   }
+
    /// Returns true when a program counter points into the generated-code range for the active VM frame.
    inline bool pc_in_code_memory_range(const void* pc) {
       const auto address = reinterpret_cast<std::uintptr_t>(pc);
@@ -125,15 +139,17 @@ namespace sysio { namespace vm {
       if (addr >= memory_range.data() && addr < memory_range.data() + memory_range.size())
          siglongjmp(*dest, sig);
 
-      // A fault whose address or interrupted PC lies in this thread's code arena is ours whatever
-      // the process-wide timed-out flag says: the x86_64 timeout revokes the shared module's code
-      // pages, and a peer thread's timed_run exit guard can clear the flag before it re-enables
-      // them. Gating on the flag routed such a fault to the previous handler and aborted the
-      // process. Matching the PC as well as si_addr is a superset of the revoked-page instruction
-      // fetch (where both are equal), so a code-generation fault inside the arena now unwinds
-      // instead of aborting.
+      // A synchronous fault whose address or interrupted PC lies in this thread's code arena is ours
+      // whatever the process-wide timed-out flag says: the x86_64 timeout revokes the shared module's
+      // code pages, and a peer thread's timed_run exit guard can clear the flag before it re-enables
+      // them. Gating on the flag routed such a fault to the previous handler and aborted the process.
+      // Matching the PC as well as si_addr is a superset of the revoked-page instruction fetch (where
+      // both are equal), so a code-generation fault inside the arena now unwinds instead of aborting.
+      // A signal sent with kill() or pthread_kill() is not a fault at that PC and keeps the handling
+      // below, where a directed timeout signal is still honoured through the flag.
       const void* const interrupted_pc = signal_instruction_pointer(uap);
-      if (pc_in_code_memory_range(addr) || (interrupted_pc && pc_in_code_memory_range(interrupted_pc)))
+      if (fault_is_synchronous(sig, info) &&
+          (pc_in_code_memory_range(addr) || (interrupted_pc && pc_in_code_memory_range(interrupted_pc))))
          siglongjmp(*dest, sig);
 
       const bool execution_timed_out = execution_has_timed_out();
@@ -257,8 +273,13 @@ namespace sysio { namespace vm {
       setup_signal_handler();
       sigjmp_buf dest;
       sigjmp_buf* volatile old_signal_handler = nullptr;
-      code_memory_range                       = code_allocator.get_code_span();
-      memory_range                            = mem_allocator ? mem_allocator->get_span() : std::span<std::byte>{};
+      // A host function may run another backend inside this call. Its spans replace ours for the
+      // duration and ours must come back on every exit, or a later fault of this run no longer
+      // matches and is declined. Saved before sigsetjmp so they survive the longjmp.
+      const std::span<std::byte> old_code_memory_range = code_memory_range;
+      const std::span<std::byte> old_memory_range      = memory_range;
+      code_memory_range = code_allocator.get_code_span();
+      memory_range      = mem_allocator ? mem_allocator->get_span() : std::span<std::byte>{};
       int sig;
       // Restore the mask ourselves instead of via sigsetjmp's savesigs: on macOS siglongjmp restores it
       // with the process-wide sigprocmask, which clobbers every thread's mask. Captured before sigsetjmp
@@ -288,14 +309,20 @@ namespace sysio { namespace vm {
             f();
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
+            code_memory_range = old_code_memory_range;
+            memory_range      = old_memory_range;
          } catch (...) {
             pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
             std::atomic_store(&signal_dest, old_signal_handler);
+            code_memory_range = old_code_memory_range;
+            memory_range      = old_memory_range;
             throw;
          }
       } else {
          pthread_sigmask(SIG_SETMASK, &old_sigmask, nullptr);
          std::atomic_store(&signal_dest, old_signal_handler);
+         code_memory_range = old_code_memory_range;
+         memory_range      = old_memory_range;
          if (sig == -1) {
             std::exception_ptr exception = std::move(saved_exception);
             saved_exception              = nullptr;
