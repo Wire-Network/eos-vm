@@ -20,6 +20,7 @@
 #include <atomic>
 #include <exception>
 #include <iostream>
+#include <mutex>
 #include <optional>
 #include <pthread.h>
 #include <signal.h>
@@ -29,7 +30,11 @@
 
 namespace sysio { namespace vm {
 
-   __attribute__((visibility("default"))) inline std::atomic<uint32_t> total_timed_run_in_progress{ 0 };
+   /// Serializes timed_run registration and exit transitions on the x86_64 shared-code path; taken in normal
+   /// thread context only. The timeout publication runs in signal context and never takes it.
+   __attribute__((visibility("default"))) inline std::mutex timed_run_transition_mutex;
+   /// Runs currently inside timed_run, process-wide. Guarded by timed_run_transition_mutex.
+   __attribute__((visibility("default"))) inline uint32_t total_timed_run_in_progress{ 0 };
 
 #if SYS_VM_HAS_JIT_BACKEND
    /// Normal JIT backend capability advertised by the selected architecture.
@@ -395,7 +400,19 @@ namespace sysio { namespace vm {
             // window, so timing out one run intentionally stops all active executions. The older thread-local timeout
             // marker was unsafe because the watchdog callback can run on a different thread and update the wrong
             // thread's flag, leaving the actual execution thread running.
+            //
+            // Registration and the exit transitions are serialized by timed_run_transition_mutex: only the last
+            // registered run clears the flag and re-enables the pages, and a run registering first prevents that,
+            // so the flag is never observed clear while the pages are still revoked and no stale clear or re-enable
+            // can land after a newer run's timeout. The timeout publication runs in signal context (nodeop) and
+            // takes no lock; it fires only for a registered run.
+            {
+               std::lock_guard<std::mutex> transition_lock(timed_run_transition_mutex);
+               ++total_timed_run_in_progress;
+               ++mod->allocator.timed_run_in_progress;
+            }
             auto reenable_code = scope_guard{ [this]() {
+               std::lock_guard<std::mutex> transition_lock(timed_run_transition_mutex);
                --total_timed_run_in_progress;
                --mod->allocator.timed_run_in_progress;
                if (total_timed_run_in_progress == 0) {
@@ -406,8 +423,6 @@ namespace sysio { namespace vm {
                }
             } };
             try {
-               ++total_timed_run_in_progress;
-               ++mod->allocator.timed_run_in_progress;
                auto wd_guard = std::forward<Watchdog>(wd).scoped_run([this]() {
                   timed_run_has_timed_out.store(true, std::memory_order_release);
                   mod->allocator.disable_code();

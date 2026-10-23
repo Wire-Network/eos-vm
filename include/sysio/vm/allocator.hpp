@@ -562,7 +562,7 @@ namespace sysio { namespace vm {
       char*                 _code_base      = nullptr;
       size_t                _code_size      = 0;
       bool                  _is_jit         = false;
-      std::atomic<uint32_t> timed_run_in_progress{ 0 };
+      uint32_t              timed_run_in_progress{ 0 }; // runs of this module inside timed_run; guarded by timed_run_transition_mutex
       std::atomic<bool>     _code_disabled{ false };
    };
 
