@@ -9,10 +9,13 @@
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/signals.hpp>
 #include <sysio/vm/utils.hpp>
+#include <sysio/vm/watchdog.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <thread>
 
 #include <catch2/catch.hpp>
@@ -177,6 +180,189 @@ TEST_CASE("A nested run restores the outer run's spans, so a later outer fault s
    CHECK(!result.returned_normally);
    REQUIRE(result.error);
    CHECK_THROWS_AS(std::rethrow_exception(result.error), sysio::vm::wasm_memory_exception);
+}
+
+// timed_run is the production entry point. Its registration and exit transitions are serialized, so a timeout
+// stays in force, with the pages revoked, until the last registered run exits, and that exit restores both.
+// The watchdog here fires when the test says so, which pins each interleaving instead of racing for it.
+namespace {
+   struct manual_watchdog {
+      std::function<void()> timeout;   // the callback timed_run armed; null outside a run
+      std::function<void()> on_disarm; // runs as the run's guard is destroyed, before its exit transition
+
+      struct guard {
+         manual_watchdog* owner;
+         explicit guard(manual_watchdog* watchdog) : owner(watchdog) {}
+         guard(const guard&)            = delete;
+         guard& operator=(const guard&) = delete;
+         ~guard() {
+            owner->timeout = nullptr;
+            if (owner->on_disarm)
+               owner->on_disarm();
+         }
+      };
+
+      template <typename F>
+      [[nodiscard]] guard scoped_run(F&& callback) {
+         timeout = std::forward<F>(callback);
+         return guard(this);
+      }
+      void fire() { timeout(); }
+   };
+
+   // The import is the witness: reaching it means the module body executed.
+   struct witness_host {
+      bool body_executed = false;
+      void host_call() { body_executed = true; }
+   };
+   using witness_rhf_t     = sysio::vm::registered_host_functions<witness_host>;
+   using witness_backend_t = sysio::vm::backend<witness_rhf_t, sysio::vm::jit>;
+
+   void register_witness_host() {
+      static const bool registered = (witness_rhf_t::add<&witness_host::host_call>("env", "host.call"), true);
+      (void)registered;
+   }
+
+   // Stands in for another run of the module that is registered but not executing.
+   struct registered_peer {
+      sysio::vm::growable_allocator& allocator;
+      bool                           held = true;
+      explicit registered_peer(sysio::vm::growable_allocator& module_allocator) : allocator(module_allocator) {
+         ++sysio::vm::total_timed_run_in_progress;
+         ++allocator.timed_run_in_progress;
+      }
+      void release() {
+         if (held) {
+            --sysio::vm::total_timed_run_in_progress;
+            --allocator.timed_run_in_progress;
+            held = false;
+         }
+      }
+      ~registered_peer() { release(); }
+   };
+
+   bool timed_out() { return sysio::vm::timed_run_has_timed_out.load(std::memory_order_acquire); }
+
+   // The production shape: one backend compiles the module (single parsing, no execution context of its own), and
+   // every thread that runs it holds a backend sharing that module with its own context and memory.
+   using witness_context_t = sysio::vm::jit_execution_context<witness_rhf_t>;
+
+   struct shared_runner {
+      witness_host              host;
+      sysio::vm::wasm_allocator memory;
+      witness_context_t         context;
+      witness_backend_t         bkend;
+
+      explicit shared_runner(witness_backend_t& compiled) {
+         bkend.share(compiled);
+         context.set_module(&compiled.get_module());
+         bkend.set_context(&context);
+         bkend.reset_max_call_depth();
+         bkend.reset_max_pages();
+         bkend.set_wasm_allocator(&memory);
+         bkend.initialize(&host);
+      }
+      void run_f() { bkend.call(host, "env", "f"); }
+   };
+}
+
+TEST_CASE("A timeout fired after the entry check stops the run before its first instruction, and stays in force "
+          "until the last registered run exits",
+          "[jit][revoked_code_recovery][timed_run]") {
+   timeout_flag_guard flag_guard;
+   register_witness_host();
+   witness_host      host;
+   witness_backend_t bkend(make_host_call_module(), host, &wa);
+   auto&             allocator = bkend.get_module().allocator;
+   auto              reenable  = sysio::vm::scope_guard{ [&] {
+      if (allocator.code_disabled())
+         allocator.enable_code(true);
+   } };
+   manual_watchdog wd;
+
+   // Another run of the module is registered throughout the first run, so that run's exit is not the last.
+   registered_peer peer(allocator);
+   bool            revoked_before_first_instruction   = false;
+   bool            timed_out_before_first_instruction = false;
+   CHECK_THROWS_AS(bkend.timed_run(wd,
+                                   [&] {
+                                      // Past timed_run's entry check, before the module's first instruction.
+                                      wd.fire();
+                                      revoked_before_first_instruction   = allocator.code_disabled();
+                                      timed_out_before_first_instruction = timed_out();
+                                      bkend.call(host, "env", "f");
+                                   }),
+                   sysio::vm::timeout_exception);
+   CHECK(revoked_before_first_instruction);
+   CHECK(timed_out_before_first_instruction);
+   CHECK(!host.body_executed);
+   // The peer is still registered: the exit restored nothing.
+   CHECK(allocator.code_disabled());
+   CHECK(timed_out());
+
+   // The next run finds the timeout in force and does not execute; being the last registered run, its exit
+   // clears the flag and re-enables the pages.
+   peer.release();
+   CHECK_THROWS_AS(bkend.timed_run(wd, [&] { bkend.call(host, "env", "f"); }), sysio::vm::timeout_exception);
+   CHECK(!host.body_executed);
+   CHECK(!allocator.code_disabled());
+   CHECK(!timed_out());
+
+   // Restored: the module runs again.
+   bkend.timed_run(wd, [&] { bkend.call(host, "env", "f"); });
+   CHECK(host.body_executed);
+}
+
+TEST_CASE("A run that outlives a newer run's timeout restores the flag and the pages only as the last registered "
+          "run",
+          "[jit][revoked_code_recovery][timed_run]") {
+   timeout_flag_guard flag_guard;
+   register_witness_host();
+   auto                     code = make_host_call_module();
+   sysio::vm::wasm_code_ptr code_ptr(code.data(), code.size());
+   witness_backend_t        compiled(code_ptr, code.size(), nullptr, sysio::vm::default_options{}, true, false);
+   auto&                    allocator = compiled.get_module().allocator;
+   auto                     reenable  = sysio::vm::scope_guard{ [&] {
+      if (allocator.code_disabled())
+         allocator.enable_code(true);
+   } };
+   shared_runner older(compiled);
+   shared_runner newer(compiled);
+
+   // While the older run is still registered (its guard is being disarmed, ahead of its exit transition), the
+   // newer run of the same module times out on its own thread and exits. That exit must leave the timeout in
+   // force; the older run's exit, the last one, restores both.
+   manual_watchdog older_wd;
+   manual_watchdog newer_wd;
+   bool            newer_timed_out                 = false;
+   bool            restored_while_older_registered = false;
+   older_wd.on_disarm = [&] {
+      std::thread worker{ [&] {
+         try {
+            newer.bkend.timed_run(newer_wd, [&] {
+               newer_wd.fire();
+               newer.run_f();
+            });
+         } catch (const sysio::vm::timeout_exception&) {
+            newer_timed_out = true;
+         } catch (...) {
+         }
+      } };
+      worker.join();
+      restored_while_older_registered = !allocator.code_disabled() || !timed_out();
+   };
+   older.bkend.timed_run(older_wd, [&] { older.run_f(); }); // its body ran before the newer timeout
+   CHECK(older.host.body_executed);
+   CHECK(newer_timed_out);
+   CHECK(!newer.host.body_executed);
+   CHECK(!restored_while_older_registered);
+   CHECK(!allocator.code_disabled());
+   CHECK(!timed_out());
+
+   // Restored: both threads' backends run the module again.
+   older.bkend.timed_run(older_wd, [&] { older.run_f(); });
+   newer.bkend.timed_run(newer_wd, [&] { newer.run_f(); });
+   CHECK(newer.host.body_executed);
 }
 
 #endif // SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_X86_64
