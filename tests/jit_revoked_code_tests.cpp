@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <exception>
 #include <functional>
+#include <future>
+#include <mutex>
 #include <thread>
 
 #include <catch2/catch.hpp>
@@ -188,6 +190,7 @@ TEST_CASE("A nested run restores the outer run's spans, so a later outer fault s
 namespace {
    struct manual_watchdog {
       std::function<void()> timeout;   // the callback timed_run armed; null outside a run
+      std::function<void()> on_arm;    // runs as timed_run arms the watchdog, after its registration
       std::function<void()> on_disarm; // runs as the run's guard is destroyed, before its exit transition
 
       struct guard {
@@ -205,6 +208,8 @@ namespace {
       template <typename F>
       [[nodiscard]] guard scoped_run(F&& callback) {
          timeout = std::forward<F>(callback);
+         if (on_arm)
+            on_arm();
          return guard(this);
       }
       void fire() { timeout(); }
@@ -363,6 +368,54 @@ TEST_CASE("A run that outlives a newer run's timeout restores the flag and the p
    older.bkend.timed_run(older_wd, [&] { older.run_f(); });
    newer.bkend.timed_run(newer_wd, [&] { newer.run_f(); });
    CHECK(newer.host.body_executed);
+}
+
+// The serialization itself: with the transition lock held by the test, a real run can neither arm its watchdog on
+// entry (registration is behind the lock) nor report completion on exit (so is the exit transition) until the lock
+// is released. Removing either lock_guard in timed_run fails this case.
+TEST_CASE("timed_run neither arms on entry nor completes on exit while the transition lock is held",
+          "[jit][revoked_code_recovery][timed_run]") {
+   timeout_flag_guard flag_guard;
+   register_witness_host();
+   witness_host      host;
+   witness_backend_t bkend(make_host_call_module(), host, &wa);
+
+   manual_watchdog    wd;
+   std::promise<void> armed_signal;
+   std::promise<void> entered_signal;
+   std::promise<void> completed_signal;
+   std::promise<void> proceed_signal;
+   auto               armed     = armed_signal.get_future();
+   auto               entered   = entered_signal.get_future();
+   auto               completed = completed_signal.get_future();
+   auto               proceed   = proceed_signal.get_future();
+   wd.on_arm                    = [&] { armed_signal.set_value(); };
+   const auto grace             = std::chrono::milliseconds(100);
+
+   std::unique_lock<std::mutex> transitions(sysio::vm::timed_run_transition_mutex);
+   std::thread                  worker{ [&] {
+      bkend.timed_run(wd, [&] {
+         entered_signal.set_value();
+         proceed.wait(); // the body stays open until the test holds the lock again
+         bkend.call(host, "env", "f");
+      });
+      completed_signal.set_value();
+   } };
+
+   // Entry: the run cannot register, so it cannot arm, until the lock is released.
+   CHECK(armed.wait_for(grace) == std::future_status::timeout);
+   transitions.unlock();
+   armed.wait();
+   entered.wait();
+
+   // Exit: the run finishes its body but cannot complete its exit transition until the lock is released.
+   transitions.lock();
+   proceed_signal.set_value();
+   CHECK(completed.wait_for(grace) == std::future_status::timeout);
+   transitions.unlock();
+   worker.join();
+   CHECK(completed.wait_for(std::chrono::seconds(0)) == std::future_status::ready);
+   CHECK(host.body_executed);
 }
 
 #endif // SYS_VM_HAS_JIT_BACKEND && SYS_VM_TARGET_X86_64
