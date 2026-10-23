@@ -1,8 +1,13 @@
 #include <sysio/vm/signals.hpp>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
+#include <future>
+#include <span>
 #include <thread>
 #include <iostream>
+#include <poll.h>
+#include <unistd.h>
 
 #include <catch2/catch.hpp>
 
@@ -105,4 +110,221 @@ TEST_CASE("Test signal handler forwarding", "[signal_handler_forward]") {
       CHECK(sig_handled == 142 + SIGFPE);
       CHECK(sig_handled_count == 1);
    }
+}
+
+// Regression for wire-sysio CI run 39807473127: a fault in this thread's code arena must be
+// jumped out of even when a peer thread has already cleared `timed_run_has_timed_out`;
+// gating on the flag chained it to the previous handler and aborted the process. These cases
+// call the handler directly with a synthetic siginfo/ucontext and the thread-local ranges
+// `invoke_with_signal_handler` would otherwise set.
+namespace {
+   // A real, mapped buffer so the code-arena span points at valid memory. Page-aligned and
+   // oversized to resemble a JIT code segment; its bytes are never executed by the test.
+   alignas(4096) std::byte regression_code_arena[8192];
+
+   struct vm_signal_state_guard {
+      vm_signal_state_guard() = default;
+      ~vm_signal_state_guard() {
+         // Restore the empty-range / cleared state the other cases in this file rely on
+         // (the thread-local ranges persist across Catch cases on the same thread).
+         sysio::vm::code_memory_range = std::span<std::byte>{};
+         sysio::vm::memory_range      = std::span<std::byte>{};
+         sysio::vm::timed_run_has_timed_out.store(false, std::memory_order_release);
+         sysio::vm::active_timed_run_has_timed_out = nullptr;
+      }
+   };
+
+   // A synthetic SIGSEGV: siginfo plus a ucontext whose interrupted instruction pointer equals the
+   // fault address, as the kernel reports an instruction fetch. Darwin's ucontext_t only points at
+   // its machine context, so that struct is carried here to keep the pointer valid.
+   struct fault_context {
+      siginfo_t  info{};
+      ucontext_t uctx{};
+#if defined(__APPLE__)
+      _STRUCT_MCONTEXT mcontext{};
+#endif
+   };
+
+   void make_instruction_fetch_fault(fault_context& fault, void* addr, int si_code = SEGV_ACCERR) {
+      fault.info.si_signo = SIGSEGV;
+      fault.info.si_code  = si_code;
+      fault.info.si_addr  = addr;
+#if defined(__APPLE__)
+      fault.uctx.uc_mcontext = &fault.mcontext;
+      fault.uctx.uc_mcsize   = sizeof(fault.mcontext);
+#   if defined(__aarch64__)
+      fault.mcontext.__ss.__pc = reinterpret_cast<decltype(fault.mcontext.__ss.__pc)>(addr);
+#   elif defined(__x86_64__)
+      fault.mcontext.__ss.__rip = reinterpret_cast<decltype(fault.mcontext.__ss.__rip)>(addr);
+#   endif
+#elif defined(__linux__) && defined(__x86_64__)
+      fault.uctx.uc_mcontext.gregs[REG_RIP] = reinterpret_cast<greg_t>(addr);
+#endif
+   }
+}
+
+TEST_CASE("A fault in the shared code arena jumps out even when timed_run_has_timed_out is false",
+          "[handle_active_vm_signal_code_range]") {
+   vm_signal_state_guard guard;
+
+   sysio::vm::code_memory_range =
+      std::span<std::byte>{ regression_code_arena, sizeof(regression_code_arena) };
+   sysio::vm::memory_range = std::span<std::byte>{};            // no linear memory in this unit path
+   // THE regression condition: a peer thread already cleared the flag.
+   sysio::vm::timed_run_has_timed_out.store(false, std::memory_order_release);
+   sysio::vm::active_timed_run_has_timed_out = nullptr;
+
+   fault_context fault;
+   make_instruction_fetch_fault(fault, regression_code_arena + 0x40); // inside the arena
+
+   bool jumped_out = false;
+   sigjmp_buf dest;
+   if (sigsetjmp(dest, 1) == 0) {
+      sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest);
+      FAIL("handle_active_vm_signal returned instead of jumping out of the revoked code arena");
+   } else {
+      jumped_out = true;
+   }
+   CHECK(jumped_out);
+}
+
+TEST_CASE("A fault outside every VM range is still declined (chained) when not timed out",
+          "[handle_active_vm_signal_code_range]") {
+   vm_signal_state_guard guard;
+
+   sysio::vm::code_memory_range =
+      std::span<std::byte>{ regression_code_arena, sizeof(regression_code_arena) };
+   sysio::vm::memory_range = std::span<std::byte>{};
+   sysio::vm::timed_run_has_timed_out.store(false, std::memory_order_release);
+   sysio::vm::active_timed_run_has_timed_out = nullptr;
+
+   // A fault well away from both the code arena and (empty) memory range.
+   int           unrelated_stack_object = 0;
+   fault_context fault;
+   make_instruction_fetch_fault(fault, &unrelated_stack_object);
+
+   sigjmp_buf dest;
+   // Not timed out and not in any VM range: the handler must return false so the signal
+   // chains to the previous handler, rather than being swallowed.
+   CHECK(sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest) == false);
+}
+
+// A VM longjmp recovery must not change any other thread's signal mask. On macOS siglongjmp
+// restored the mask with the process-wide sigprocmask, so after a recovery SIGTERM stayed
+// blocked everywhere and could not reach the thread meant to handle it.
+// Backport of gofractally/eos-vm#23.
+static int signal_pipefds[2];
+static void signal_write_pipe(int) {
+   [[maybe_unused]] auto written = write(signal_pipefds[1], "", 1);
+}
+
+TEST_CASE("Test signal mask longjmp restoration", "[signal_mask_longjmp_restoration]") {
+   REQUIRE(pipe(signal_pipefds) == 0);
+   auto pipe_guard = sysio::vm::scope_guard{[&]{
+      close(signal_pipefds[0]);
+      close(signal_pipefds[1]);
+   }};
+
+   struct sigaction sa, old_sa;
+   sa.sa_handler = signal_write_pipe;
+   sigemptyset(&sa.sa_mask);
+   sa.sa_flags = 0;
+   REQUIRE(sigaction(SIGTERM, &sa, &old_sa) == 0);
+   auto restore_orig_sigterm_guard = sysio::vm::scope_guard{[&]{
+      sigaction(SIGTERM, &old_sa, nullptr);
+   }};
+
+   std::promise<void> thread_running;
+   std::promise<void> thread_may_return;
+   std::thread t([&] {
+      // block everything except SIGTERM in this thread
+      sigset_t suspend_mask;
+      sigfillset(&suspend_mask);
+      sigdelset(&suspend_mask, SIGTERM);
+      pthread_sigmask(SIG_SETMASK, &suspend_mask, nullptr);
+
+      thread_running.set_value();
+      thread_may_return.get_future().get();
+   });
+   auto thread_guard = sysio::vm::scope_guard{[&] {
+      thread_may_return.set_value();
+      t.join();
+   }};
+
+   thread_running.get_future().get();
+
+   sigset_t old_mask;
+   // block SIGTERM on this thread
+   sigset_t set;
+   sigemptyset(&set);
+   sigaddset(&set, SIGTERM);
+   REQUIRE(pthread_sigmask(SIG_BLOCK, &set, &old_mask) == 0);
+   auto mask_guard = sysio::vm::scope_guard{[&] {
+      pthread_sigmask(SIG_SETMASK, &old_mask, nullptr);
+   }};
+
+   sysio::vm::growable_allocator code_alloc;
+   sysio::vm::wasm_allocator wasm_alloc;
+   sysio::vm::invoke_with_signal_handler([&]() {
+      volatile auto i = *wasm_alloc.get_base_ptr<unsigned char>();
+      (void)i;
+   }, [](int){}, code_alloc, &wasm_alloc);
+
+   // send SIGTERM to the process; it should be delivered to the thread that leaves it unblocked
+   REQUIRE(kill(getpid(), SIGTERM) == 0);
+
+   pollfd pfd{
+      .fd = signal_pipefds[0],
+      .events = POLLIN,
+   };
+   int r = poll(&pfd, 1, 500);
+   REQUIRE(r == 1);
+   REQUIRE((pfd.revents & POLLIN) != 0);
+
+   char buf;
+   REQUIRE(read(signal_pipefds[0], &buf, 1) == 1);
+}
+
+// A SIGSEGV sent with kill() or pthread_kill() while generated code is executing is not a
+// fault at that PC: it keeps the previous handling (chained when no timeout is in force,
+// unwound through the timeout flag when one is).
+TEST_CASE("A signal sent with kill() while executing generated code is declined when not timed out",
+          "[handle_active_vm_signal_code_range]") {
+   vm_signal_state_guard guard;
+
+   sysio::vm::code_memory_range =
+      std::span<std::byte>{ regression_code_arena, sizeof(regression_code_arena) };
+   sysio::vm::memory_range = std::span<std::byte>{};
+   sysio::vm::timed_run_has_timed_out.store(false, std::memory_order_release);
+   sysio::vm::active_timed_run_has_timed_out = nullptr;
+
+   fault_context fault;
+   make_instruction_fetch_fault(fault, regression_code_arena + 0x40, SI_USER); // PC in the arena, but sent, not faulted
+
+   sigjmp_buf dest;
+   CHECK(sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest) == false);
+}
+
+TEST_CASE("A signal sent with kill() while a timeout is in force still unwinds the run",
+          "[handle_active_vm_signal_code_range]") {
+   vm_signal_state_guard guard;
+
+   sysio::vm::code_memory_range =
+      std::span<std::byte>{ regression_code_arena, sizeof(regression_code_arena) };
+   sysio::vm::memory_range = std::span<std::byte>{};
+   sysio::vm::timed_run_has_timed_out.store(true, std::memory_order_release);
+   sysio::vm::active_timed_run_has_timed_out = nullptr;
+
+   fault_context fault;
+   make_instruction_fetch_fault(fault, regression_code_arena + 0x40, SI_USER);
+
+   bool jumped_out = false;
+   sigjmp_buf dest;
+   if (sigsetjmp(dest, 1) == 0) {
+      sysio::vm::handle_active_vm_signal(SIGSEGV, &fault.info, &fault.uctx, &dest);
+      FAIL("handle_active_vm_signal returned instead of unwinding a run whose timeout is in force");
+   } else {
+      jumped_out = true;
+   }
+   CHECK(jumped_out);
 }
