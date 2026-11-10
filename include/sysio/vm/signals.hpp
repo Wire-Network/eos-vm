@@ -95,7 +95,7 @@ namespace sysio { namespace vm {
       return !code_memory_range.empty() && address >= begin && address < end;
    }
 
-   /// Chains a signal to the handler that was installed before sys-vm registered its signal handler.
+   /// Chain to the previous disposition, checking default/ignored sentinels before decoding SA_SIGINFO.
    inline void chain_previous_signal_handler(int sig, siginfo_t* info, void* uap) {
       struct sigaction* prev_action;
       switch (sig) {
@@ -105,25 +105,22 @@ namespace sysio { namespace vm {
          case SIGILL: prev_action = &prev_signal_handler<SIGILL>; break;
          default: std::abort();
       }
-      if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
+      if (prev_action->sa_handler == SIG_DFL) {
+         // The default for every supported signal is to terminate the process.
+         sigaction(sig, prev_action, nullptr);
+         raise(sig);
+      } else if (prev_action->sa_handler == SIG_IGN) {
+         // Ignore the signal even when SA_SIGINFO is set on the saved disposition.
+      } else if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
          signal(sig, SIG_DFL);
          raise(sig);
          std::abort();
-      }
-      if (prev_action->sa_flags & SA_SIGINFO) {
+      } else if (prev_action->sa_flags & SA_SIGINFO) {
          // FIXME: We need to be at least as strict as the original
          // flags and relax the mask as needed.
          prev_action->sa_sigaction(sig, info, uap);
       } else {
-         if (prev_action->sa_handler == SIG_DFL) {
-            // The default for all three signals is to terminate the process.
-            sigaction(sig, prev_action, nullptr);
-            raise(sig);
-         } else if (prev_action->sa_handler == SIG_IGN) {
-            // Do nothing
-         } else {
-            prev_action->sa_handler(sig);
-         }
+         prev_action->sa_handler(sig);
       }
    }
 
