@@ -73,10 +73,13 @@ namespace sysio { namespace vm {
 #endif
    }
 
-   /// Returns true when the signal was raised by the kernel for a fault at the interrupted
-   /// instruction, as opposed to one sent with kill(), pthread_kill() or sigqueue().
-   /// Darwin ARM64 reports SEGV_ACCERR even for raise(SIGSEGV); a saved syscall context excludes a fault.
-   inline bool fault_is_synchronous(int sig, const siginfo_t* info, [[maybe_unused]] const void* uap = nullptr) {
+   /// Identify the synchronous fault codes eligible for VM code-arena ownership.
+   /// Darwin ARM64 synthesizes fault codes for SIGSEGV, SIGBUS and SIGILL. The SVC64 check excludes self-raised
+   /// signals, but externally sent signals can carry a stale ESR and remain indistinguishable from real faults.
+   /// @param sig Signal number associated with the supplied metadata.
+   /// @param info Non-null metadata supplied to the SA_SIGINFO handler.
+   /// @param uap Signal context; explicit nullptr requests code-only classification without the Darwin check.
+   inline bool fault_is_synchronous(int sig, const siginfo_t* info, [[maybe_unused]] const void* uap) {
 #if defined(__APPLE__) && defined(__aarch64__)
       if (uap) {
          const auto* context = static_cast<const ucontext_t*>(uap);
@@ -103,6 +106,22 @@ namespace sysio { namespace vm {
       }
    }
 
+   /// Once VM ownership is declined, identify faults that must reach the previous disposition.
+   /// Linux forces every kernel-origin SIGSEGV, including #GP and newer architecture codes, to use its handler.
+   /// Keep that wider rule separate from the narrower VM code-arena ownership classifier.
+   /// @param sig Signal number associated with the supplied metadata.
+   /// @param info Signal metadata, or nullptr when a direct caller provides no origin information.
+   /// @param uap Signal context passed through to the platform-specific classifier.
+   inline bool fault_requires_chaining(int sig, const siginfo_t* info, const void* uap) {
+      if (!info)
+         return false;
+#ifdef __linux__
+      if (sig == SIGSEGV)
+         return info->si_code > 0;
+#endif
+      return fault_is_synchronous(sig, info, uap);
+   }
+
    /// Returns true when a program counter points into the generated-code range for the active VM frame.
    inline bool pc_in_code_memory_range(const void* pc) {
       const auto address = reinterpret_cast<std::uintptr_t>(pc);
@@ -122,9 +141,9 @@ namespace sysio { namespace vm {
          default: std::abort();
       }
       if (prev_action->sa_handler == SIG_DFL ||
-          (prev_action->sa_handler == SIG_IGN && info && fault_is_synchronous(sig, info, uap))) {
+          (prev_action->sa_handler == SIG_IGN && fault_requires_chaining(sig, info, uap))) {
          // Returning to an ignored fault retries the same instruction. Restore termination for that case too.
-         auto default_action = *prev_action;
+         struct sigaction default_action = *prev_action;
          default_action.sa_handler = SIG_DFL;
          sigaction(sig, &default_action, nullptr);
          raise(sig);
@@ -171,7 +190,9 @@ namespace sysio { namespace vm {
       const bool execution_timed_out = execution_has_timed_out();
       // SEGV/BUS/ILL can come from a revoked code page or from the directed AArch64 interruption signal.
       // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
-      if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out) {
+      // An expired timeout never authorizes consuming or unwinding across an unowned host fault.
+      if (fault_requires_chaining(sig, info, uap) ||
+          ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out)) {
          return false;
       }
       if (execution_timed_out && active_timed_run_has_timed_out && !code_memory_range.empty() &&
