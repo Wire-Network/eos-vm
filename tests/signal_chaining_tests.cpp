@@ -5,6 +5,7 @@
 #include <array>
 #include <cerrno>
 #include <csignal>
+#include <type_traits>
 #include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
@@ -175,6 +176,7 @@ TEST_CASE("Host memory faults terminate instead of repeating an ignored instruct
    action.sa_flags = GENERATE(0, SA_SIGINFO);
    const bool active_vm_frame = GENERATE(false, true);
    const auto status = deliver_host_signal(action, true, active_vm_frame);
+   CAPTURE(action.sa_flags, active_vm_frame, status);
    REQUIRE(WIFSIGNALED(status));
    // A protected-page access is SIGSEGV on Linux; Unix platforms may report it as SIGBUS.
    CHECK((WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS));
@@ -187,12 +189,14 @@ TEST_CASE("Asynchronously raised host signals retain ignored dispositions", "[si
    action.sa_flags = GENERATE(0, SA_SIGINFO);
    const bool active_vm_frame = GENERATE(false, true);
    const auto status = deliver_host_signal(action, false, active_vm_frame);
+   CAPTURE(action.sa_flags, active_vm_frame, status);
    REQUIRE(WIFEXITED(status));
    CHECK(WEXITSTATUS(status) == EXIT_SUCCESS);
 }
 
 /// Only signal-specific kernel fault codes may override an ignored disposition.
-TEST_CASE("Synchronous fault classification includes arithmetic faults and excludes sent signals", "[signal_handler_chain]") {
+TEST_CASE("Synchronous fault classification includes arithmetic faults and excludes sent signals",
+          "[signal_handler_chain]") {
    using signal_fault = std::pair<int, int>;
    const auto fault = GENERATE(signal_fault{SIGSEGV, SEGV_MAPERR}, signal_fault{SIGSEGV, SEGV_ACCERR},
                               signal_fault{SIGBUS, BUS_ADRALN}, signal_fault{SIGBUS, BUS_ADRERR},
@@ -209,3 +213,25 @@ TEST_CASE("Synchronous fault classification includes arithmetic faults and exclu
       CHECK_FALSE(sysio::vm::fault_is_synchronous(fault.first, &info));
    }
 }
+
+#if defined(__APPLE__) && defined(__aarch64__)
+/// Darwin's fault-like siginfo cannot turn a saved SVC64 context into a hardware memory fault.
+TEST_CASE("Darwin syscall contexts exclude synchronous memory faults", "[signal_handler_chain]") {
+   siginfo_t info{};
+   info.si_code = GENERATE(SEGV_MAPERR, SEGV_ACCERR);
+   std::remove_pointer_t<mcontext_t> machine_context{};
+   ucontext_t context{};
+   context.uc_mcontext = &machine_context;
+   constexpr unsigned exception_class_shift = 26;
+   constexpr unsigned supervisor_call_64 = 0x15;
+   constexpr unsigned data_abort_from_user = 0x24;
+   constexpr unsigned instruction_abort_from_user = 0x20;
+
+   machine_context.__es.__esr = supervisor_call_64 << exception_class_shift;
+   CHECK_FALSE(sysio::vm::fault_is_synchronous(SIGSEGV, &info, &context));
+   machine_context.__es.__esr = data_abort_from_user << exception_class_shift;
+   CHECK(sysio::vm::fault_is_synchronous(SIGSEGV, &info, &context));
+   machine_context.__es.__esr = instruction_abort_from_user << exception_class_shift;
+   CHECK(sysio::vm::fault_is_synchronous(SIGSEGV, &info, &context));
+}
+#endif

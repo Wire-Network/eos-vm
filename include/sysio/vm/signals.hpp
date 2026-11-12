@@ -75,7 +75,19 @@ namespace sysio { namespace vm {
 
    /// Returns true when the signal was raised by the kernel for a fault at the interrupted
    /// instruction, as opposed to one sent with kill(), pthread_kill() or sigqueue().
-   inline bool fault_is_synchronous(int sig, const siginfo_t* info) {
+   /// Darwin ARM64 reports SEGV_ACCERR even for raise(SIGSEGV); a saved syscall context excludes a fault.
+   inline bool fault_is_synchronous(int sig, const siginfo_t* info, [[maybe_unused]] const void* uap = nullptr) {
+#if defined(__APPLE__) && defined(__aarch64__)
+      if (uap) {
+         const auto* context = static_cast<const ucontext_t*>(uap);
+         // ARM's ESR exception-class field identifies SVC64 independently of Darwin's synthetic si_code.
+         constexpr unsigned exception_class_shift = 26;
+         constexpr unsigned supervisor_call_64 = 0x15;
+         if (context->uc_mcontext &&
+             (context->uc_mcontext->__es.__esr >> exception_class_shift) == supervisor_call_64)
+            return false;
+      }
+#endif
       switch (sig) {
          case SIGSEGV: return info->si_code == SEGV_MAPERR || info->si_code == SEGV_ACCERR;
          case SIGBUS: return info->si_code == BUS_ADRALN || info->si_code == BUS_ADRERR || info->si_code == BUS_OBJERR;
@@ -110,7 +122,7 @@ namespace sysio { namespace vm {
          default: std::abort();
       }
       if (prev_action->sa_handler == SIG_DFL ||
-          (prev_action->sa_handler == SIG_IGN && info && fault_is_synchronous(sig, info))) {
+          (prev_action->sa_handler == SIG_IGN && info && fault_is_synchronous(sig, info, uap))) {
          // Returning to an ignored fault retries the same instruction. Restore termination for that case too.
          auto default_action = *prev_action;
          default_action.sa_handler = SIG_DFL;
@@ -152,7 +164,7 @@ namespace sysio { namespace vm {
       // A signal sent with kill() or pthread_kill() is not a fault at that PC and keeps the handling
       // below, where a directed timeout signal is still honoured through the flag.
       const void* const interrupted_pc = signal_instruction_pointer(uap);
-      if (fault_is_synchronous(sig, info) &&
+      if (fault_is_synchronous(sig, info, uap) &&
           (pc_in_code_memory_range(addr) || (interrupted_pc && pc_in_code_memory_range(interrupted_pc))))
          siglongjmp(*dest, sig);
 
