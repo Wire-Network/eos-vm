@@ -268,7 +268,7 @@ TEST_CASE("Asynchronously raised host signals retain ignored dispositions", "[si
    CHECK(WEXITSTATUS(status) == EXIT_SUCCESS);
 }
 
-/// Only signal-specific kernel fault codes may override an ignored disposition.
+/// Code-only VM ownership recognizes explicit fault causes and rejects user-sent metadata.
 TEST_CASE("Synchronous fault classification includes arithmetic faults and excludes sent signals",
           "[signal_handler_chain]") {
    using signal_fault = std::pair<int, int>;

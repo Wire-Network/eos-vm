@@ -107,7 +107,7 @@ namespace sysio { namespace vm {
    }
 
    /// Once VM ownership is declined, identify faults that must reach the previous disposition.
-   /// Linux forces every kernel-origin SIGSEGV, including #GP and newer architecture codes, to use its handler.
+   /// Linux chaining accepts every positive SIGSEGV code, including #GP and newer architecture causes.
    /// Keep that wider rule separate from the narrower VM code-arena ownership classifier.
    /// @param sig Signal number associated with the supplied metadata.
    /// @param info Signal metadata, or nullptr when a direct caller provides no origin information.
@@ -148,7 +148,7 @@ namespace sysio { namespace vm {
          sigaction(sig, &default_action, nullptr);
          raise(sig);
       } else if (prev_action->sa_handler == SIG_IGN) {
-         // Asynchronously sent signals remain ignored, including when the saved action carries SA_SIGINFO.
+         // Honor the ignored disposition when the available metadata does not identify a fault.
       } else if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
          signal(sig, SIG_DFL);
          raise(sig);
