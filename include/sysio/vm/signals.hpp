@@ -79,6 +79,10 @@ namespace sysio { namespace vm {
       switch (sig) {
          case SIGSEGV: return info->si_code == SEGV_MAPERR || info->si_code == SEGV_ACCERR;
          case SIGBUS: return info->si_code == BUS_ADRALN || info->si_code == BUS_ADRERR || info->si_code == BUS_OBJERR;
+         case SIGFPE:
+            return info->si_code == FPE_INTDIV || info->si_code == FPE_INTOVF || info->si_code == FPE_FLTDIV ||
+                   info->si_code == FPE_FLTOVF || info->si_code == FPE_FLTUND || info->si_code == FPE_FLTRES ||
+                   info->si_code == FPE_FLTINV || info->si_code == FPE_FLTSUB;
          case SIGILL:
             return info->si_code == ILL_ILLOPC || info->si_code == ILL_ILLOPN || info->si_code == ILL_ILLADR ||
                    info->si_code == ILL_ILLTRP || info->si_code == ILL_PRVOPC || info->si_code == ILL_PRVREG ||
@@ -95,7 +99,7 @@ namespace sysio { namespace vm {
       return !code_memory_range.empty() && address >= begin && address < end;
    }
 
-   /// Chain to the previous disposition, checking default/ignored sentinels before decoding SA_SIGINFO.
+   /// Chain to the previous disposition; synchronous ignored faults terminate instead of retrying forever.
    inline void chain_previous_signal_handler(int sig, siginfo_t* info, void* uap) {
       struct sigaction* prev_action;
       switch (sig) {
@@ -105,12 +109,15 @@ namespace sysio { namespace vm {
          case SIGILL: prev_action = &prev_signal_handler<SIGILL>; break;
          default: std::abort();
       }
-      if (prev_action->sa_handler == SIG_DFL) {
-         // The default for every supported signal is to terminate the process.
-         sigaction(sig, prev_action, nullptr);
+      if (prev_action->sa_handler == SIG_DFL ||
+          (prev_action->sa_handler == SIG_IGN && info && fault_is_synchronous(sig, info))) {
+         // Returning to an ignored fault retries the same instruction. Restore termination for that case too.
+         auto default_action = *prev_action;
+         default_action.sa_handler = SIG_DFL;
+         sigaction(sig, &default_action, nullptr);
          raise(sig);
       } else if (prev_action->sa_handler == SIG_IGN) {
-         // Ignore the signal even when SA_SIGINFO is set on the saved disposition.
+         // Asynchronously sent signals remain ignored, including when the saved action carries SA_SIGINFO.
       } else if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
          signal(sig, SIG_DFL);
          raise(sig);

@@ -5,6 +5,7 @@
 #include <array>
 #include <cerrno>
 #include <csignal>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -13,6 +14,7 @@ namespace {
 
 constexpr int chained_signal = SIGILL;
 constexpr int child_setup_failure = 81;
+constexpr int child_unexpected_vm_catch = 82;
 constexpr unsigned child_timeout_seconds = 5;
 
 /// Capture the original ABI's arguments without modifying process-wide signal actions.
@@ -33,8 +35,9 @@ void record_siginfo_handler(int sig, siginfo_t* info, void* context) {
    observed = {sig, info, context};
 }
 
-/// Round-trip a disposition through the kernel and isolate default termination or a broken sentinel call.
-int chain_in_subprocess(struct sigaction action) {
+/// Isolate fatal signal tests, bound a broken handler's spin, and leave the parent signal state intact.
+template <typename F>
+int run_in_subprocess(F&& test) {
    const auto child = fork();
    REQUIRE(child >= 0);
    if (child == 0) {
@@ -48,12 +51,9 @@ int chain_in_subprocess(struct sigaction action) {
          std::signal(sig, SIG_DFL);
          sigaddset(&unblocked, sig);
       }
-      if (sigprocmask(SIG_UNBLOCK, &unblocked, nullptr) != 0 || sigemptyset(&action.sa_mask) != 0 ||
-          sigaction(chained_signal, &action, nullptr) != 0 ||
-          sigaction(chained_signal, nullptr, &sysio::vm::prev_signal_handler<chained_signal>) != 0)
+      if (sigprocmask(SIG_UNBLOCK, &unblocked, nullptr) != 0)
          _exit(child_setup_failure);
-      std::signal(chained_signal, SIG_DFL);
-      sysio::vm::chain_previous_signal_handler(chained_signal, nullptr, nullptr);
+      test();
       _exit(EXIT_SUCCESS);
    }
    int status = 0;
@@ -63,6 +63,53 @@ int chain_in_subprocess(struct sigaction action) {
    } while (waited == -1 && errno == EINTR);
    REQUIRE(waited == child);
    return status;
+}
+
+/// Round-trip a disposition through the kernel before exercising the direct chaining entry point.
+int chain_in_subprocess(struct sigaction action) {
+   return run_in_subprocess([action]() mutable {
+      if (sigemptyset(&action.sa_mask) != 0 || sigaction(chained_signal, &action, nullptr) != 0 ||
+          sigaction(chained_signal, nullptr, &sysio::vm::prev_signal_handler<chained_signal>) != 0)
+         _exit(child_setup_failure);
+      std::signal(chained_signal, SIG_DFL);
+      sysio::vm::chain_previous_signal_handler(chained_signal, nullptr, nullptr);
+   });
+}
+
+/// Deliver a real protected-page fault or raise() after installing the VM over the chosen predecessor.
+int deliver_host_signal(struct sigaction action, bool synchronous, bool active_vm_frame) {
+   return run_in_subprocess([=]() mutable {
+      if (sigemptyset(&action.sa_mask) != 0 || sigaction(SIGSEGV, &action, nullptr) != 0 ||
+          sigaction(SIGBUS, &action, nullptr) != 0)
+         _exit(child_setup_failure);
+      sysio::vm::setup_signal_handler_impl();
+      sysio::vm::signal_dest.store(nullptr);
+      sysio::vm::code_memory_range = {};
+      sysio::vm::memory_range = {};
+      sysio::vm::timed_run_has_timed_out.store(false);
+      sysio::vm::active_timed_run_has_timed_out = nullptr;
+
+      // A nonempty, unrelated code range makes an active VM frame decline this host fault.
+      std::byte unrelated_code{};
+      sigjmp_buf destination;
+      if (sigsetjmp(destination, 1) != 0)
+         _exit(child_unexpected_vm_catch);
+      if (active_vm_frame) {
+         sysio::vm::code_memory_range = {&unrelated_code, 1};
+         sysio::vm::signal_dest.store(&destination);
+      }
+      if (synchronous) {
+         const auto page_size = sysconf(_SC_PAGESIZE);
+         if (page_size <= 0)
+            _exit(child_setup_failure);
+         auto* page = mmap(nullptr, page_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+         if (page == MAP_FAILED)
+            _exit(child_setup_failure);
+         *static_cast<volatile unsigned char*>(page) = 1;
+      } else if (raise(SIGSEGV) != 0) {
+         _exit(child_setup_failure);
+      }
+   });
 }
 
 } // namespace
@@ -119,4 +166,46 @@ TEST_CASE("A predecessor that is the VM handler does not recurse", "[signal_hand
    const auto status = chain_in_subprocess(action);
    REQUIRE(WIFSIGNALED(status));
    CHECK(WTERMSIG(status) == chained_signal);
+}
+
+/// Ignoring a predecessor cannot suppress a kernel fault outside VM code, with or without an active frame.
+TEST_CASE("Host memory faults terminate instead of repeating an ignored instruction", "[signal_handler_chain]") {
+   struct sigaction action{};
+   action.sa_handler = GENERATE(false, true) ? SIG_IGN : SIG_DFL;
+   action.sa_flags = GENERATE(0, SA_SIGINFO);
+   const bool active_vm_frame = GENERATE(false, true);
+   const auto status = deliver_host_signal(action, true, active_vm_frame);
+   REQUIRE(WIFSIGNALED(status));
+   // A protected-page access is SIGSEGV on Linux; Unix platforms may report it as SIGBUS.
+   CHECK((WTERMSIG(status) == SIGSEGV || WTERMSIG(status) == SIGBUS));
+}
+
+/// raise() is not a synchronous fault and must still honor an ignored predecessor, including SA_SIGINFO.
+TEST_CASE("Asynchronously raised host signals retain ignored dispositions", "[signal_handler_chain]") {
+   struct sigaction action{};
+   action.sa_handler = SIG_IGN;
+   action.sa_flags = GENERATE(0, SA_SIGINFO);
+   const bool active_vm_frame = GENERATE(false, true);
+   const auto status = deliver_host_signal(action, false, active_vm_frame);
+   REQUIRE(WIFEXITED(status));
+   CHECK(WEXITSTATUS(status) == EXIT_SUCCESS);
+}
+
+/// Only signal-specific kernel fault codes may override an ignored disposition.
+TEST_CASE("Synchronous fault classification includes arithmetic faults and excludes sent signals", "[signal_handler_chain]") {
+   using signal_fault = std::pair<int, int>;
+   const auto fault = GENERATE(signal_fault{SIGSEGV, SEGV_MAPERR}, signal_fault{SIGSEGV, SEGV_ACCERR},
+                              signal_fault{SIGBUS, BUS_ADRALN}, signal_fault{SIGBUS, BUS_ADRERR},
+                              signal_fault{SIGBUS, BUS_OBJERR}, signal_fault{SIGILL, ILL_ILLOPC},
+                              signal_fault{SIGFPE, FPE_INTDIV}, signal_fault{SIGFPE, FPE_INTOVF},
+                              signal_fault{SIGFPE, FPE_FLTDIV}, signal_fault{SIGFPE, FPE_FLTOVF},
+                              signal_fault{SIGFPE, FPE_FLTUND}, signal_fault{SIGFPE, FPE_FLTRES},
+                              signal_fault{SIGFPE, FPE_FLTINV}, signal_fault{SIGFPE, FPE_FLTSUB});
+   siginfo_t info{};
+   info.si_code = fault.second;
+   CHECK(sysio::vm::fault_is_synchronous(fault.first, &info));
+   for (int code : {SI_USER, SI_QUEUE}) {
+      info.si_code = code;
+      CHECK_FALSE(sysio::vm::fault_is_synchronous(fault.first, &info));
+   }
 }
