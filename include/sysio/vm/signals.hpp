@@ -73,18 +73,53 @@ namespace sysio { namespace vm {
 #endif
    }
 
-   /// Returns true when the signal was raised by the kernel for a fault at the interrupted
-   /// instruction, as opposed to one sent with kill(), pthread_kill() or sigqueue().
-   inline bool fault_is_synchronous(int sig, const siginfo_t* info) {
+   /// Identify the synchronous fault codes eligible for VM code-arena ownership.
+   /// Darwin ARM64 synthesizes fault codes for SIGSEGV, SIGBUS and SIGILL. The SVC64 check excludes self-raised
+   /// signals, but externally sent signals can carry a stale ESR and remain indistinguishable from real faults.
+   /// @param sig Signal number associated with the supplied metadata.
+   /// @param info Non-null metadata supplied to the SA_SIGINFO handler.
+   /// @param uap Signal context; explicit nullptr requests code-only classification without the Darwin check.
+   inline bool fault_is_synchronous(int sig, const siginfo_t* info, [[maybe_unused]] const void* uap) {
+#if defined(__APPLE__) && defined(__aarch64__)
+      if (uap) {
+         const auto* context = static_cast<const ucontext_t*>(uap);
+         // ARM's ESR exception-class field identifies SVC64 independently of Darwin's synthetic si_code.
+         constexpr unsigned exception_class_shift = 26;
+         constexpr unsigned supervisor_call_64 = 0x15;
+         if (context->uc_mcontext &&
+             (context->uc_mcontext->__es.__esr >> exception_class_shift) == supervisor_call_64)
+            return false;
+      }
+#endif
       switch (sig) {
          case SIGSEGV: return info->si_code == SEGV_MAPERR || info->si_code == SEGV_ACCERR;
          case SIGBUS: return info->si_code == BUS_ADRALN || info->si_code == BUS_ADRERR || info->si_code == BUS_OBJERR;
+         case SIGFPE:
+            return info->si_code == FPE_INTDIV || info->si_code == FPE_INTOVF || info->si_code == FPE_FLTDIV ||
+                   info->si_code == FPE_FLTOVF || info->si_code == FPE_FLTUND || info->si_code == FPE_FLTRES ||
+                   info->si_code == FPE_FLTINV || info->si_code == FPE_FLTSUB;
          case SIGILL:
             return info->si_code == ILL_ILLOPC || info->si_code == ILL_ILLOPN || info->si_code == ILL_ILLADR ||
                    info->si_code == ILL_ILLTRP || info->si_code == ILL_PRVOPC || info->si_code == ILL_PRVREG ||
                    info->si_code == ILL_COPROC || info->si_code == ILL_BADSTK;
          default: return false;
       }
+   }
+
+   /// Once VM ownership is declined, identify faults that must reach the previous disposition.
+   /// Linux chaining accepts every positive SIGSEGV code, including #GP and newer architecture causes.
+   /// Keep that wider rule separate from the narrower VM code-arena ownership classifier.
+   /// @param sig Signal number associated with the supplied metadata.
+   /// @param info Signal metadata, or nullptr when a direct caller provides no origin information.
+   /// @param uap Signal context passed through to the platform-specific classifier.
+   inline bool fault_requires_chaining(int sig, const siginfo_t* info, const void* uap) {
+      if (!info)
+         return false;
+#ifdef __linux__
+      if (sig == SIGSEGV)
+         return info->si_code > 0;
+#endif
+      return fault_is_synchronous(sig, info, uap);
    }
 
    /// Returns true when a program counter points into the generated-code range for the active VM frame.
@@ -95,7 +130,7 @@ namespace sysio { namespace vm {
       return !code_memory_range.empty() && address >= begin && address < end;
    }
 
-   /// Chain to the previous disposition, checking default/ignored sentinels before decoding SA_SIGINFO.
+   /// Chain to the previous disposition; synchronous ignored faults terminate instead of retrying forever.
    inline void chain_previous_signal_handler(int sig, siginfo_t* info, void* uap) {
       struct sigaction* prev_action;
       switch (sig) {
@@ -105,12 +140,15 @@ namespace sysio { namespace vm {
          case SIGILL: prev_action = &prev_signal_handler<SIGILL>; break;
          default: std::abort();
       }
-      if (prev_action->sa_handler == SIG_DFL) {
-         // The default for every supported signal is to terminate the process.
-         sigaction(sig, prev_action, nullptr);
+      if (prev_action->sa_handler == SIG_DFL ||
+          (prev_action->sa_handler == SIG_IGN && fault_requires_chaining(sig, info, uap))) {
+         // Returning to an ignored fault retries the same instruction. Restore termination for that case too.
+         struct sigaction default_action = *prev_action;
+         default_action.sa_handler = SIG_DFL;
+         sigaction(sig, &default_action, nullptr);
          raise(sig);
       } else if (prev_action->sa_handler == SIG_IGN) {
-         // Ignore the signal even when SA_SIGINFO is set on the saved disposition.
+         // Honor the ignored disposition when the available metadata does not identify a fault.
       } else if ((prev_action->sa_flags & SA_SIGINFO) && prev_action->sa_sigaction == &signal_handler) {
          signal(sig, SIG_DFL);
          raise(sig);
@@ -145,14 +183,16 @@ namespace sysio { namespace vm {
       // A signal sent with kill() or pthread_kill() is not a fault at that PC and keeps the handling
       // below, where a directed timeout signal is still honoured through the flag.
       const void* const interrupted_pc = signal_instruction_pointer(uap);
-      if (fault_is_synchronous(sig, info) &&
+      if (fault_is_synchronous(sig, info, uap) &&
           (pc_in_code_memory_range(addr) || (interrupted_pc && pc_in_code_memory_range(interrupted_pc))))
          siglongjmp(*dest, sig);
 
       const bool execution_timed_out = execution_has_timed_out();
       // SEGV/BUS/ILL can come from a revoked code page or from the directed AArch64 interruption signal.
       // On linux no SIGBUS handler is registered (see setup_signal_handler_impl()) so it will never occur here
-      if ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out) {
+      // An expired timeout never authorizes consuming or unwinding across an unowned host fault.
+      if (fault_requires_chaining(sig, info, uap) ||
+          ((sig == SIGSEGV || sig == SIGBUS || sig == SIGILL) && !execution_timed_out)) {
          return false;
       }
       if (execution_timed_out && active_timed_run_has_timed_out && !code_memory_range.empty() &&
