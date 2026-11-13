@@ -205,5 +205,14 @@ if(SYS_VM_HAS_AARCH64_JIT_BACKEND_FOR_BENCHMARK)
    target_link_libraries(aarch64_jit_benchmark sys-vm)
 endif()
 
+# Its own executable, so every sys-vm longjmp in it is the fortified one whatever the build type. The check lives
+# in glibc and is chosen where longjmp is called, which for a header-only library is the test itself.
+add_executable(fortified_exit_tests main.cpp alternate_stack_exit_tests.cpp)
+setup_vm_target(fortified_exit_tests)
+target_link_libraries(fortified_exit_tests sys-vm Catch2::Catch2)
+target_compile_definitions(fortified_exit_tests PUBLIC -DCATCH_CONFIG_NO_POSIX_SIGNALS)
+target_compile_options(fortified_exit_tests PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2)
+
 # UNIT_TESTS: Discover
 catch_discover_tests(unit_tests)
+catch_discover_tests(fortified_exit_tests)

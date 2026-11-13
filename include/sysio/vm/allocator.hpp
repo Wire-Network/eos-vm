@@ -1,5 +1,6 @@
 #pragma once
 
+#include <sysio/vm/config.hpp>
 #include <sysio/vm/constants.hpp>
 #include <sysio/vm/exceptions.hpp>
 #include <sysio/vm/span.hpp>
@@ -9,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -149,7 +151,82 @@ namespace sysio { namespace vm {
          }
       }
 
+      /// Runs `f` on this stack when one was mapped, otherwise on the caller's stack.
+      ///
+      /// An exception `f` throws is rethrown on the caller's stack. A `siglongjmp` out of `f` must target a
+      /// `sigsetjmp` called inside `f`: glibc's fortified longjmp aborts on a jump down to another stack.
+      template <typename F>
+      void run(F&& f) {
+#if SYS_VM_TARGET_X86_64 || SYS_VM_HAS_AARCH64_JIT_BACKEND
+         if (_ptr) {
+            // The switch carries no unwind information, so nothing may propagate through it.
+            std::exception_ptr error;
+            auto               guarded = [&]() noexcept {
+               try {
+                  f();
+               } catch (...) { error = std::current_exception(); }
+            };
+            call_on_stack(
+                  static_cast<char*>(top()) - saved_sp_slot_size,
+                  [](void* data) { (*static_cast<decltype(guarded)*>(data))(); }, &guarded);
+            if (error) {
+               std::rethrow_exception(std::move(error));
+            }
+            return;
+         }
+#endif
+         // Only the JIT backends need the mapped stack, and a target without one cannot switch to it.
+         f();
+      }
+
     private:
+#if SYS_VM_TARGET_X86_64 || SYS_VM_HAS_AARCH64_JIT_BACKEND
+      /// Bytes kept at the top of the stack for the caller's stack pointer; a multiple of the ABI stack alignment.
+      static constexpr std::ptrdiff_t saved_sp_slot_size = 16;
+#endif
+
+#if SYS_VM_TARGET_X86_64
+      /// Calls `fn(data)` with the stack pointer at `new_sp`, then returns on the caller's stack.
+      /// `new_sp` is 16-byte aligned and its slot holds the caller's stack pointer during the call.
+      [[gnu::noinline]] static void call_on_stack(void* new_sp, void (*fn)(void*), void* data) {
+         asm volatile("mov %%rsp, (%[new_sp]); "
+                      "mov %[new_sp], %%rsp; "
+                      "callq *%[fn]; "
+                      "mov (%%rsp), %%rsp; "      /* fn returns with rsp back at new_sp */
+                      : [fn] "+a"(fn), "+D"(data) /* inputs the call may clobber */
+                      : [new_sp] "r"(new_sp)
+                      : "memory", "cc", "rcx", "rdx", "rsi", "r8", "r9", "r10", "r11", "xmm0", "xmm1", "xmm2", "xmm3",
+                        "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14",
+                        "xmm15", "mm0", "mm1", "mm2", "mm3", "mm4", "mm5", "mm6", "mm7", "st", "st(1)", "st(2)",
+                        "st(3)", "st(4)", "st(5)", "st(6)", "st(7)");
+      }
+#elif SYS_VM_HAS_AARCH64_JIT_BACKEND
+      /// Calls `fn(data)` with the stack pointer at `new_sp`, then returns on the caller's stack.
+      /// `new_sp` is 16-byte aligned and its slot holds the caller's stack pointer during the call.
+      [[gnu::noinline]] static void call_on_stack(void* new_sp, void (*fn)(void*), void* data) {
+         register void* arg0 asm("x0")   = data;
+         register void* target asm("x9") = reinterpret_cast<void*>(fn);
+         // x20 is callee-saved, so it still addresses the saved stack pointer after the call.
+         register void* switched_sp asm("x20") = new_sp;
+         asm volatile("mov x11, sp\n"
+                      "str x11, [x20]\n"
+                      "mov sp, x20\n"
+                      "blr x9\n"
+                      "ldr x11, [x20]\n"
+                      "mov sp, x11\n"
+                      : "+r"(arg0), "+r"(target)
+                      : "r"(switched_sp)
+                      : "memory", "cc", "x1", "x2", "x3", "x4", "x5", "x6", "x7", "x8", "x10", "x11", "x12", "x13",
+                        "x14", "x15", "x16", "x17",
+#   if !defined(__APPLE__)
+                        "x18",
+#   endif
+                        "x30", "v0", "v1", "v2", "v3", "v4", "v5", "v6", "v7", "v8", "v9", "v10", "v11", "v12", "v13",
+                        "v14", "v15", "v16", "v17", "v18", "v19", "v20", "v21", "v22", "v23", "v24", "v25", "v26",
+                        "v27", "v28", "v29", "v30", "v31");
+      }
+#endif
+
       void*       _ptr = nullptr;
       std::size_t _size;
    };

@@ -374,20 +374,20 @@ namespace sysio { namespace vm {
                   maximum_stack_usage *= 2;
                }
                stack_allocator alt_stack(maximum_stack_usage * sizeof(native_value));
-               // Reserve trampoline scratch space: x86_64 keeps the historical 24 bytes used by
-               // inline assembly data, while AArch64 needs one 16-byte slot to preserve alignment
-               // and save the caller SP.
-               void* stack = alt_stack.top();
-               if (stack) {
-                  constexpr std::ptrdiff_t jit_stack_reserve = sys_vm_has_aarch64_jit_backend ? 16 : 24;
-                  stack                                      = static_cast<char*>(stack) - jit_stack_reserve;
-               }
                using jit_fn_type =
                      std::conditional_t<sys_vm_has_aarch64_jit_backend, native_value (*)(void*, void*, native_value*),
                                         native_value (*)(void*, void*)>;
                auto fn = reinterpret_cast<jit_fn_type>(
                      _mod->jit_mod->jit_code_offset[func_index - _mod->jit_mod->get_imported_functions_size()] +
                      _mod->allocator._code_base);
+
+               // The signal frame is set up on the stack the generated code runs on, so every siglongjmp out of
+               // generated code, a host call or the signal handler stays on that stack.
+               auto run_generated_code = [&]() {
+                  vm::invoke_with_signal_handler(
+                        [&]() { result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory()); },
+                        &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+               };
 
                if constexpr (EnableBacktrace) {
                   sigset_t block_mask;
@@ -400,17 +400,9 @@ namespace sysio { namespace vm {
                      pthread_sigmask(SIG_UNBLOCK, &block_mask, nullptr);
                   } };
 
-                  vm::invoke_with_signal_handler(
-                        [&]() {
-                           result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
-                        },
-                        &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+                  alt_stack.run(run_generated_code);
                } else {
-                  vm::invoke_with_signal_handler(
-                        [&]() {
-                           result = execute<sizeof...(Args)>(args_raw, fn, this, base_type::linear_memory(), stack);
-                        },
-                        &handle_signal, _mod->allocator, base_type::get_wasm_allocator());
+                  alt_stack.run(run_generated_code);
                }
             }
          } catch (wasm_exit_exception&) { return {}; }
@@ -525,26 +517,19 @@ namespace sysio { namespace vm {
       /* TODO abstract this and clean this up a bit, this really doesn't belong here */
       template <int Count>
       static native_value execute(native_value* data, native_value (*fun)(void*, void*), jit_execution_context* context,
-                                  void* linear_memory, void* stack) {
+                                  void* linear_memory) {
          static_assert(sizeof(native_value) == 8, "8-bytes expected for native_value");
          native_value result;
          unsigned     stack_check = context->_remaining_call_depth;
          // TODO refactor this whole thing to not need all of this, should be generated from the backend
          // currently ignoring register c++17 warning
-         register void* stack_top asm("r12") = stack;
+         register void* caller_sp asm("r12") = nullptr;
          // 0x1f80 is the default MXCSR value
 #   define ASM_CODE(before, after)                                                                                     \
       asm volatile(                                                                                                    \
-            "test %[stack_top], %[stack_top]; "                                                                        \
-            "jnz 3f; "                                                                                                 \
-            "mov %%rsp, %[stack_top]; "                                                                                \
+            "mov %%rsp, %[caller_sp]; "                                                                                \
             "sub $0x98, %%rsp; " /* red-zone + 24 bytes*/                                                              \
-            "mov %[stack_top], (%%rsp); "                                                                              \
-            "jmp 4f; "                                                                                                 \
-            "3: "                                                                                                      \
-            "mov %%rsp, (%[stack_top]); "                                                                              \
-            "mov %[stack_top], %%rsp; "                                                                                \
-            "4: "                                                                                                      \
+            "mov %[caller_sp], (%%rsp); "                                                                              \
             "stmxcsr 16(%%rsp); "                                                                                      \
             "mov $0x1f80, %%rax; "                                                                                     \
             "mov %%rax, 8(%%rsp); "                                                                                    \
@@ -563,7 +548,8 @@ namespace sysio { namespace vm {
             "mov (%%rsp), %%rsp; " /* Force explicit register allocation, because otherwise it's too hard to get the   \
                                       clobbers right. */                                                               \
             : [result] "=&a"(result), /* output, reused as a scratch register */                                       \
-              [data] "+d"(data), [fun] "+c"(fun), [stack_top] "+r"(stack_top) /* input only, but may be clobbered */   \
+              [data] "+d"(data), [fun] "+c"(fun), /* input only, but may be clobbered */                               \
+              [caller_sp] "+r"(caller_sp)         /* scratch */                                                        \
             : [context] "D"(context), [linear_memory] "S"(linear_memory), [StackOffset] "n"(Count * 8),                \
               [Count] "n"(Count), "b"(stack_check) /* input */                                                         \
             : "memory", "cc", /* clobber */        /* call clobbered registers, that are not otherwise used */         \
@@ -592,31 +578,17 @@ namespace sysio { namespace vm {
        */
       template <int Count>
       static native_value execute(native_value*          data, native_value (*fun)(void*, void*, native_value*),
-                                  jit_execution_context* context, void* linear_memory, void* stack) {
+                                  jit_execution_context* context, void* linear_memory) {
          static_assert(sizeof(native_value) == 8, "8-bytes expected for native_value");
          native_value           result;
-         register void*         arg0 asm("x0")       = context;
-         register void*         arg1 asm("x1")       = linear_memory;
-         register native_value* arg2 asm("x2")       = data;
-         register void*         target asm("x9")     = reinterpret_cast<void*>(fun);
-         register void*         stack_top asm("x20") = stack;
+         register void*         arg0 asm("x0")   = context;
+         register void*         arg1 asm("x1")   = linear_memory;
+         register native_value* arg2 asm("x2")   = data;
+         register void*         target asm("x9") = reinterpret_cast<void*>(fun);
 
-         asm volatile("sub sp, sp, #16\n"
-                      "str x20, [sp]\n"
-                      "mov x11, sp\n"
-                      "cbz x20, 1f\n"
-                      "str x11, [x20]\n"
-                      "mov sp, x20\n"
-                      "1:\n"
-                      "blr x9\n"
-                      "cbz x20, 2f\n"
-                      "ldr x11, [x20]\n"
-                      "mov sp, x11\n"
-                      "2:\n"
-                      "ldr x20, [sp]\n"
-                      "add sp, sp, #16\n"
+         asm volatile("blr x9\n"
                       : "+r"(arg0), "+r"(arg1), "+r"(arg2), "+r"(target)
-                      : "r"(stack_top)
+                      :
                       : "memory", "cc", "x3", "x4", "x5", "x6", "x7", "x8", "x10", "x11", "x12", "x13", "x14", "x15",
                         "x16", "x17",
 #   if !defined(__APPLE__)
