@@ -37,6 +37,14 @@ namespace sysio { namespace vm {
    /// Points to the timeout state for the timed_run currently executing on this thread.
    inline thread_local std::atomic<bool>* active_timed_run_has_timed_out{ nullptr };
 
+   /// AArch64 JIT branch polls between reads of the timeout state.
+   inline constexpr uint32_t timeout_poll_interval = 65536;
+
+   __attribute__((visibility("default")))
+   /// AArch64 JIT branch polls left on this thread before the next read of the timeout state; each timed_run starts
+   /// a full interval.
+   inline thread_local uint32_t timeout_poll_countdown{ timeout_poll_interval };
+
    // Fixes a duplicate symbol build issue when building with `-fvisibility=hidden`
    __attribute__((visibility("default"))) inline thread_local std::exception_ptr saved_exception{ nullptr };
 

@@ -181,6 +181,7 @@ add_executable(unit_tests main.cpp
    implementation_limits_tests.cpp
    instantiation_tests.cpp
    aarch64_jit_tests.cpp
+   host_call_timeout_tests.cpp
    backend_tests.cpp
    vector_tests.cpp)
 setup_vm_target(unit_tests)

@@ -1279,10 +1279,27 @@ namespace sysio { namespace vm {
          emit_exit_call();
       }
 
-      /// Calls the existing JIT host-function adapter while preserving x86's longjmp exception boundary.
+      /// True when the AArch64 JIT timed_run executing on this thread has expired; false outside one.
+      static bool run_has_timed_out() {
+         return active_timed_run_has_timed_out != nullptr &&
+                active_timed_run_has_timed_out->load(std::memory_order_acquire);
+      }
+
+      /// Raises a timeout through the VM signal frame when the timed_run executing on this thread has expired.
+      static void throw_if_run_timed_out() {
+         if (run_has_timed_out()) {
+            vm::throw_<timeout_exception>("execution timed out");
+         }
+      }
+
+      /// Calls the existing JIT host-function adapter while preserving x86's longjmp exception boundary. Checks the
+      /// timeout unsampled before and after the call, so no host call starts after the timeout and the run stops when
+      /// the call in progress returns.
       static native_value call_host_function(Context* context, native_value* stack, uint32_t idx) {
+         throw_if_run_timed_out();
          native_value result{ uint64_t{ 0 } };
          vm::longjmp_on_exception([&]() { result = context->call_host_function(stack, idx); });
+         throw_if_run_timed_out();
          return result;
       }
 
@@ -1332,17 +1349,15 @@ namespace sysio { namespace vm {
          vm::throw_<wasm_interpreter_exception>("call depth exceeded");
       }
 
-      /// Raises a timeout through the VM signal frame when the current timed_run has expired.
+      /// Raises a timeout through the VM signal frame when the current timed_run has expired. Reads the timeout state
+      /// once every timeout_poll_interval calls.
       static void check_timeout() {
-         static constexpr uint32_t timeout_poll_interval  = 65536;
-         thread_local uint32_t     timeout_poll_countdown = timeout_poll_interval;
-
          if (--timeout_poll_countdown != 0) {
             return;
          }
          timeout_poll_countdown = timeout_poll_interval;
 
-         if (execution_has_timed_out()) {
+         if (run_has_timed_out()) {
             vm::throw_<timeout_exception>("execution timed out");
          }
       }
@@ -1595,6 +1610,8 @@ namespace sysio { namespace vm {
                                                 uint32_t table_index, uint32_t functypeidx) {
          native_value result{ uint64_t{ 0 } };
          vm::longjmp_on_exception([&]() {
+            // Every indirect call checks the timeout unsampled, before any table check can trap instead.
+            throw_if_run_timed_out();
             auto& full_module = context->get_module();
             auto& jit_module  = *full_module.jit_mod;
             SYS_VM_ASSERT(!jit_module.tables.empty(), wasm_interpreter_exception, "call_indirect out of range");
@@ -1614,6 +1631,8 @@ namespace sysio { namespace vm {
                const size_t param_count = ft.param_types.size();
                for (size_t i = 0; i < param_count / 2; ++i) { std::swap(stack[i], stack[param_count - i - 1]); }
                result = context->call_host_function(stack, funcnum);
+               // As call_host_function does after a direct import call.
+               throw_if_run_timed_out();
             } else {
                using jit_fn_type = native_value (*)(void*, void*, native_value*);
                auto* code        = reinterpret_cast<unsigned char*>(full_module.allocator._code_base) +
