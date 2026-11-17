@@ -343,10 +343,12 @@ namespace sysio { namespace vm {
             // suggestion to interrupt the execution thread with repeated signals is unsafe in practice: delivery can
             // land inside host/libc/helper frames where siglongjmp would corrupt process state, while consuming and
             // re-sending the signal flakes under shared-code concurrency. Generated control-flow polls observe this
-            // thread-local flag; completed executions observe it at the normal timed_run boundaries below.
+            // thread-local flag; completed executions observe it at the normal timed_run boundaries below. Host calls,
+            // direct or through call_indirect, observe it before and after every call.
             std::atomic<bool>        local_timed_run_has_timed_out{ false };
             std::atomic<bool>* const previous_timed_run_has_timed_out = active_timed_run_has_timed_out;
             active_timed_run_has_timed_out                            = &local_timed_run_has_timed_out;
+            timeout_poll_countdown                                    = timeout_poll_interval;
             auto restore_timeout_state = scope_guard{ [previous_timed_run_has_timed_out]() {
                active_timed_run_has_timed_out = previous_timed_run_has_timed_out;
             } };
