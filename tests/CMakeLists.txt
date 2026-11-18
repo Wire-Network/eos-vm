@@ -183,6 +183,7 @@ add_executable(unit_tests main.cpp
    aarch64_jit_tests.cpp
    host_call_timeout_tests.cpp
    backend_tests.cpp
+   unreachable_call_tests.cpp
    vector_tests.cpp)
 setup_vm_target(unit_tests)
 target_link_libraries(unit_tests sys-vm Catch2::Catch2)
