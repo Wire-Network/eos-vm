@@ -662,6 +662,14 @@ namespace sysio { namespace vm {
                return result;
             }
          }
+         /// Pops the arguments of a call to a function of type `ft`, last parameter first.
+         /// A pop at the polymorphic base of unreachable code changes nothing, so the walk stops there.
+         void pop_params(const func_type& ft) {
+            for (std::size_t i = ft.param_types.size(); i > 0 && !at_polymorphic_base(); --i)
+               pop(ft.param_types[i - 1]);
+         }
+         /// True when the top of the stack is the polymorphic base left by unreachable code.
+         bool at_polymorphic_base() const { return !state.empty() && state.back() == unreachable_tag; }
          void top(uint8_t expected) {
             // Constrain the top of the stack if it was any_type or unreachable_tag.
             pop(expected);
@@ -923,8 +931,7 @@ namespace sysio { namespace vm {
                   check_in_bounds();
                   uint32_t funcnum = parse_varuint32(code);
                   const func_type& ft = _mod->get_function_type(funcnum);
-                  for(uint32_t i = 0; i < ft.param_types.size(); ++i)
-                     op_stack.pop(ft.param_types[ft.param_types.size() - i - 1]);
+                  op_stack.pop_params(ft);
                   SYS_VM_ASSERT(ft.return_count <= 1, wasm_parse_exception, "unsupported");
                   if(ft.return_count)
                      op_stack.push(ft.return_type);
@@ -936,8 +943,7 @@ namespace sysio { namespace vm {
                   const func_type& ft = _mod->types.at(functypeidx);
                   SYS_VM_ASSERT(_mod->tables.size() > 0, wasm_parse_exception, "call_indirect requires a table");
                   op_stack.pop(types::i32);
-                  for(uint32_t i = 0; i < ft.param_types.size(); ++i)
-                     op_stack.pop(ft.param_types[ft.param_types.size() - i - 1]);
+                  op_stack.pop_params(ft);
                   SYS_VM_ASSERT(ft.return_count <= 1, wasm_parse_exception, "unsupported");
                   if(ft.return_count)
                      op_stack.push(ft.return_type);
